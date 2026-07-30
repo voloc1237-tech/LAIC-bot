@@ -89,7 +89,7 @@ class LAICAnalyzer:
             }
         
         # Группировка по часам
-        recent['hour'] = recent['time'].dt.floor('H')
+        recent['hour'] = recent['time'].dt.floor('h')
         hourly = recent.groupby('hour').size()
         
         peak_rate = hourly.max()
