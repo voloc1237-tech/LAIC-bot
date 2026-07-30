@@ -1,0 +1,27 @@
+name: Test Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test secrets
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "✅ TOKEN найден"
+          else
+            echo "❌ TOKEN не найден"
+            exit 1
+          fi
+      
+      - name: Test Python
+        run: |
+          python --version
+          echo "✅ Python работает"
+          
