@@ -1,5 +1,6 @@
 name: LAIC Daily Monitor
 
+
 on:
   schedule:
     - cron: '0 6 * * *'
