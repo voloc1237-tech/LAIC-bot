@@ -1,0 +1,58 @@
+# === РЕГИОНЫ МОНИТОРИНГА ===
+regions:
+  japan:
+    name: "🇯🇵 Япония"
+    min_lat: 24.0
+    max_lat: 46.0
+    min_lon: 122.0
+    max_lon: 146.0
+    min_magnitude: 4.0
+    alert_threshold: 6.0
+    
+  california:
+    name: "🇺🇸 Калифорния"
+    min_lat: 32.0
+    max_lat: 42.0
+    min_lon: -125.0
+    max_lon: -114.0
+    min_magnitude: 3.5
+    alert_threshold: 5.5
+
+  turkey:
+    name: "🇹🇷 Турция"
+    min_lat: 35.0
+    max_lat: 42.0
+    min_lon: 26.0
+    max_lon: 45.0
+    min_magnitude: 4.0
+    alert_threshold: 5.5
+
+# === ПАРАМЕТРЫ АНАЛИЗА ===
+analysis:
+  history_days: 30
+  precursor_window_days: 7
+  swarm_detection_hours: 72
+  energy_window_days: 14
+  
+  risk_levels:
+    low: 25
+    moderate: 45
+    high: 65
+    critical: 80
+
+  anomaly:
+    min_events_for_trend: 5
+    trend_significance: 0.05
+    magnitude_acceleration_threshold: 0.3
+
+# === TELEGRAM ===
+telegram:
+  max_message_length: 4000
+  alert_cooldown_hours: 6
+
+# === КЭШ ===
+cache:
+  enabled: true
+  directory: "data/cache"
+  max_age_hours: 6
+  
