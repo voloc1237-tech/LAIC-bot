@@ -1,0 +1,28 @@
+# Секреты
+config/.env
+*.key
+service_account.json
+
+# Данные
+data/cache/*
+!data/cache/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Системные
+.DS_Store
+Thumbs.db
+
