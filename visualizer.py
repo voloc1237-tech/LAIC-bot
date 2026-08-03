@@ -170,8 +170,14 @@ def create_interactive_report(
         xaxis_title='Дата',
         yaxis_title='Магнитуда (M)',
         hovermode='closest',
-        template='plotly_white'
+        template='plotly_white',
+        height=500,                 # ← увеличиваем высоту
+        width=900,                  # ← ширина (можно адаптивно)
+        font=dict(size=14),         # ← более крупный шрифт
+        margin=dict(l=60, r=30, t=60, b=80)  # ← отступы для подписей
     )
+    
+    
     fig = go.Figure(data=[trace], layout=layout)
     plotly_div = plot(fig, output_type='div', include_plotlyjs='cdn')
 
