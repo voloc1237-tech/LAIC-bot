@@ -339,7 +339,58 @@ def main():
     else:
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
     
+    # ═══════════════════════════════════════════════════════════════
+    # 1e. ПРОГНОЗИРОВАНИЕ (LSTM)
+    # ═══════════════════════════════════════════════════════════════
     
+    try:
+        from predictor import EarthquakePredictor
+        PREDICTOR_AVAILABLE = True
+    except ImportError:
+        PREDICTOR_AVAILABLE = False
+        logger.warning("⚠️ Модуль прогнозирования не найден")
+    
+    if PREDICTOR_AVAILABLE and not all_events.empty:
+        logger.info("\n" + "=" * 70)
+        logger.info("🔮 ЭТАП 1e: Прогнозирование (LSTM)")
+        logger.info("=" * 70)
+        
+        predictor = EarthquakePredictor()
+        
+        # Подготавливаем данные для обучения
+        # Нужны: магнитуда, энергия, Kp, температура
+        training_data = []
+        for _, row in all_events.iterrows():
+            training_data.append({
+                'magnitude': row.get('magnitude', 0),
+                'energy': 10**(1.5 * row.get('magnitude', 0) + 4.8) / 4.184e12,
+                'kp_mean': row.get('kp_mean', 0),
+                'temp_mean': row.get('temp_mean', 0)
+            })
+        
+        df_train = pd.DataFrame(training_data)
+        
+        if len(df_train) >= 20:
+            # Обучаем модель
+            predictor.train(df_train, epochs=30)
+            
+            # Прогноз на основе последних данных
+            prob, pred_mag = predictor.predict(df_train)
+            if prob is not None:
+                logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
+                logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
+                
+                # Добавляем прогноз в отчёт
+                if TG_AVAILABLE and chat_id:
+                    forecast_msg = (
+                        f"🔮 <b>ПРОГНОЗ НА БЛИЖАЙШИЕ ДНИ</b>\n"
+                        f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
+                        f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
+                        f"{'⚠️ Повышенное внимание!' if prob > 0.5 else '✅ Ситуация стабильна'}"
+                    )
+                    send_photo(chat_id, None, forecast_msg)  # или send_message
+        else:
+            logger.info(f"ℹ️ Прогнозирование пропущено (нужно ≥20 событий, собрано {len(df_train)})")
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
