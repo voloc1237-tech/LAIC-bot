@@ -29,7 +29,8 @@ jobs:
         env:
           EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
         run: |
-          echo "$EARTH_ENGINE_KEY_BASE64" | tr -d '\n\r ' | base64 -d > /tmp/ee-key.json
+          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d | jq -c . > /tmp/ee-key.json
+          #echo "$EARTH_ENGINE_KEY_BASE64" | tr -d '\n\r ' | base64 -d > /tmp/ee-key.json
           echo "=== Первые 100 символов ключа ==="
           head -c 100 /tmp/ee-key.json
           echo ""
