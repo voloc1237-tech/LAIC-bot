@@ -9,6 +9,7 @@ import os
 import sys
 import logging
 import pandas as pd
+import requests
 from datetime import datetime, timezone, timedelta
 from aftershock_filter import filter_aftershocks
 
