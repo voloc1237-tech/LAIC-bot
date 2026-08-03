@@ -8,9 +8,10 @@ main.py — ГЛАВНЫЙ ФАЙЛ LAIC-бота
 import os
 import sys
 import logging
-import pandas as pd 
+import pandas as pd
 from datetime import datetime, timezone, timedelta
 from aftershock_filter import filter_aftershocks
+
 # Логи в stdout
 logging.basicConfig(
     level=logging.INFO,
@@ -128,8 +129,6 @@ def main():
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
 
-
-    
     # ═══════════════════════════════════════════════════════════════
     # 1a. ФИЛЬТРАЦИЯ АФТЕРШОКОВ
     # ═══════════════════════════════════════════════════════════════
@@ -147,9 +146,9 @@ def main():
         else:
             df_filtered, df_aftershocks = filter_aftershocks(
                 df,
-                time_window_days=7,      # можно сделать настраиваемым
-                distance_km=50,          # можно сделать настраиваемым
-                mag_threshold=0.5        # можно сделать настраиваемым
+                time_window_days=7,
+                distance_km=50,
+                mag_threshold=0.5
             )
             data_filtered[region_name] = df_filtered
             aftershock_counts[region_name] = len(df_aftershocks)
@@ -160,27 +159,7 @@ def main():
 
     total_filtered = sum(len(df) for df in data.values())
     logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
-        # Фильтруем афтершоки для каждого региона
-        data_filtered = {}
-        for region_name, df in data.items():
-            if df.empty:
-                data_filtered[region_name] = df
-            else:
-                df_filtered, df_aftershocks = filter_aftershocks(
-                    df,
-                    time_window_days=7,
-                    distance_km=50,
-                    mag_threshold=0.5
-                )
-                data_filtered[region_name] = df_filtered
-                # Сохраняем афтершоки отдельно (можно логировать или отправлять в отчёт)
-                if not df_aftershocks.empty:
-                    logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)}")
-                    # Можно добавить в отчёт информацию об афтершоках
-                    # aftershock_report[region_name] = df_aftershocks
 
-        # Затем используем data_filtered вместо data для анализа
-        data = data_filtered
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
     # ═══════════════════════════════════════════════════════════════
@@ -216,8 +195,12 @@ def main():
     event_iono = {}
     event_space = {}
 
-    # Объединяем все данные в один DataFrame (если глобальный режим) или по регионам
-    all_events = pd.concat(data.values(), ignore_index=True) if data else pd.DataFrame()
+    # Объединяем все данные в один DataFrame (пропуская пустые)
+    all_events = pd.concat(
+        [df for df in data.values() if not df.empty],
+        ignore_index=True
+    ) if data else pd.DataFrame()
+
     strong_events = all_events[all_events['magnitude'] >= min_mag_for_detail] if not all_events.empty else pd.DataFrame()
 
     if not strong_events.empty:
@@ -237,6 +220,11 @@ def main():
             event_time = row['time']
             mag = row['magnitude']
             logger.info(f"🔍 Событие {event_id} M{mag:.1f} в {event_time}")
+
+            # Проверяем, не является ли событие афтершоком
+            if row.get('is_aftershock', False):
+                logger.info(f"   ⏭️ Афтершок, пропускаем сбор данных")
+                continue
 
             # Погода (7 дней до, 3 после)
             if weather:
