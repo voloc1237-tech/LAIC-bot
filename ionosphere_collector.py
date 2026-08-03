@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ionosphere_collector.py — сбор TEC и ROTI через IONEX-файлы.
-Реализован анализ аномалий с учётом исторических данных (фон за прошлый год).
-
-Зависимости:
-    pip install pandas numpy gnssanalysis
+ionosphere_collector.py — сбор TEC через IONEX-файлы.
+Использует HTTPS-доступ к CDDIS (без FTP).
+Работает с архивными данными (2000-2023).
 """
 
 import os
@@ -15,10 +13,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 import pandas as pd
 import numpy as np
-from gnssanalysis.ionex import IonexMap
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,17 +24,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Проверка наличия gnssanalysis
+try:
+    from gnssanalysis.ionex import IonexMap
+    GNSS_AVAILABLE = True
+    logger.info("✅ gnssanalysis загружена")
+except ImportError:
+    GNSS_AVAILABLE = False
+    logger.warning("⚠️ gnssanalysis не установлена. Установите: pip install gnssanalysis")
+
 
 class IonosphereCollector:
     """
-    Сборщик ионосферных данных (TEC, ROTI) через IONEX-файлы.
-    - Target: данные вокруг события
-    - Background: данные за тот же период год назад (для расчёта нормы)
-    Использует FTP-зеркало IGS (открытый доступ).
+    Сборщик ионосферных данных (TEC) через IONEX-файлы.
+    Использует HTTPS-доступ к CDDIS.
+    Работает с архивными данными (2000-2023).
     """
 
-    # FTP-зеркало IGS (открытое, не требует авторизации)
-    CDDIS_FTP_BASE = "ftp://igs.ensg.ign.fr/pub/igs/products/ionex"
+    # HTTPS-доступ к CDDIS (без FTP)
+    CDDIS_BASE = "https://cddis.nasa.gov/archive/gnss/products/ionex"
 
     def __init__(self, cache_dir="data/ionex_cache"):
         self.cache_dir = Path(cache_dir)
@@ -52,34 +56,18 @@ class IonosphereCollector:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
-    @staticmethod
-    def _get_ionex_version(date: datetime) -> str:
-        """
-        Выбирает версию файла IONEX в зависимости от свежести даты.
-        - codg: Финальные данные (точность высокая, задержка ~14 дней).
-        - c1pg: Прогнозные данные (доступны сразу, точность ниже).
-        """
-        now = datetime.now(timezone.utc)
-        
-        # Если дата старше 15 дней, берем финальные (codg)
-        if (now - date).days > 15:
-            return "codg"
-        else:
-            # Иначе берем прогнозные (c1pg), чтобы данные были доступны
-            return "c1pg"
-
-    def _get_ionex_filename(self, date: datetime, version: str = None) -> str:
+    def _get_ionex_filename(self, date: datetime, version: str = "codg") -> str:
         """
         Формирует имя IONEX-файла по дате.
         Формат: codgYYYYDDD.01i (например, codg2023001.01i)
         """
-        if version is None:
-            version = self._get_ionex_version(date)
         doy = date.timetuple().tm_yday
         return f"{version}{date.year}{doy:03d}.01i"
 
-    def _download_ionex(self, date: datetime, version: str = None) -> str | None:
-        """Скачивает IONEX-файл с FTP-зеркала IGS."""
+    def _download_ionex(self, date: datetime, version: str = "codg") -> str | None:
+        """
+        Скачивает IONEX-файл с CDDIS через HTTPS.
+        """
         filename = self._get_ionex_filename(date, version)
         local_path = self.cache_dir / filename
 
@@ -90,7 +78,8 @@ class IonosphereCollector:
 
         year = date.strftime("%Y")
         doy = date.timetuple().tm_yday
-        url = f"{self.CDDIS_FTP_BASE}/{year}/{doy:03d}/{filename}"
+        # Путь на CDDIS: /archive/gnss/products/ionex/YYYY/DDD/filename
+        url = f"{self.CDDIS_BASE}/{year}/{doy:03d}/{filename}"
 
         try:
             logger.info(f"📥 Скачивание IONEX: {url}")
@@ -108,13 +97,10 @@ class IonosphereCollector:
             if e.code == 404:
                 logger.warning(f"⚠️ IONEX файл не найден (404): {filename}")
             else:
-                logger.warning(f"⚠️ Ошибка HTTP при скачивании: {e}")
-            return None
-        except urllib.error.URLError as e:
-            logger.warning(f"⚠️ Ошибка сети при скачивании: {e}")
+                logger.warning(f"⚠️ Ошибка HTTP: {e}")
             return None
         except Exception as e:
-            logger.warning(f"⚠️ Неожиданная ошибка скачивания: {e}")
+            logger.warning(f"⚠️ Ошибка скачивания: {e}")
             if local_path.exists():
                 local_path.unlink()
             return None
@@ -124,6 +110,10 @@ class IonosphereCollector:
         Парсит IONEX-файл и извлекает TEC для указанной точки.
         Возвращает DataFrame с колонками: ['time', 'tec_value']
         """
+        if not GNSS_AVAILABLE:
+            logger.warning("⚠️ gnssanalysis не установлена, пропускаем парсинг")
+            return pd.DataFrame()
+
         try:
             ionmap = IonexMap.from_file(filepath)
         except Exception as e:
@@ -169,7 +159,13 @@ class IonosphereCollector:
         current_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
 
         while current_date <= end_time:
-            version = self._get_ionex_version(current_date)
+            # Для дат до 2024 используем финальные файлы (codg)
+            if current_date.year <= 2023:
+                version = "codg"
+            else:
+                # Для свежих дат — пробуем codg, если нет — c1pg
+                version = "codg"
+                
             filepath = self._download_ionex(current_date, version)
             
             if filepath:
@@ -193,50 +189,15 @@ class IonosphereCollector:
         logger.info(f"🛰️ TEC: {len(df_combined)} записей для ({lat:.2f}, {lon:.2f})")
         return df_combined
 
-    def fetch_roti(self, lat: float, lon: float, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """
-        Получить ROTI (Rate of TEC Index) — показатель ионосферных возмущений.
-        ROTI рассчитывается как скользящее стандартное отклонение TEC за окно 8 часов.
-        """
-        tec_df = self.fetch_tec_for_point(lat, lon, start_time, end_time)
-        if tec_df.empty:
-            return pd.DataFrame()
-
-        # Приводим к регулярной сетке 2 часа
-        tec_df = tec_df.asfreq("2H")
-
-        # ROTI = std(TEC) за окно 8 часов (4 точки по 2 часа)
-        tec_df["roti"] = tec_df["tec_value"].rolling("8H", min_periods=2).std()
-
-        logger.info(f"🛰️ ROTI: {len(tec_df)} записей")
-        return tec_df[["roti"]]
-
     def fetch_for_event(self, event_time: datetime, lat: float, lon: float, 
                         days_before: int = 7, days_after: int = 3) -> dict:
         """
-        Собирает TEC и ROTI за период вокруг события (Target) и за прошлый год (Background).
-        Возвращает словарь:
-        {
-            'tec': df_target,
-            'background': df_background,
-            'roti': df_roti,
-            'is_anomaly': bool,
-            'z_score_max': float,
-            'z_score_min': float,
-            'mean_bg': float,
-            'std_bg': float,
-            'details': str
-        }
+        Собирает TEC за период вокруг события (Target) и за прошлый год (Background).
+        Возвращает словарь с данными и анализом аномалий.
         """
         event_time = self._to_utc(event_time)
 
-        # 1. Сбор данных ВОКРУГ СОБЫТИЯ (Target)
-        start_target = event_time - timedelta(days=days_before)
-        end_target = event_time + timedelta(days=days_after)
-        target_df = self.fetch_tec_for_point(lat, lon, start_target, end_target)
-
-        if target_df.empty:
-            logger.warning(f"⚠️ Нет Target данных для ({lat:.2f}, {lon:.2f})")
+        if not GNSS_AVAILABLE:
             return {
                 'tec': pd.DataFrame(),
                 'background': pd.DataFrame(),
@@ -246,12 +207,29 @@ class IonosphereCollector:
                 'z_score_min': 0.0,
                 'mean_bg': 0.0,
                 'std_bg': 0.0,
-                'details': "Нет данных"
+                'details': "gnssanalysis не установлена"
+            }
+
+        # 1. Сбор данных ВОКРУГ СОБЫТИЯ (Target)
+        start_target = event_time - timedelta(days=days_before)
+        end_target = event_time + timedelta(days=days_after)
+        target_df = self.fetch_tec_for_point(lat, lon, start_target, end_target)
+
+        if target_df.empty:
+            return {
+                'tec': pd.DataFrame(),
+                'background': pd.DataFrame(),
+                'roti': pd.DataFrame(),
+                'is_anomaly': False,
+                'z_score_max': 0.0,
+                'z_score_min': 0.0,
+                'mean_bg': 0.0,
+                'std_bg': 0.0,
+                'details': "Нет данных Target"
             }
 
         # 2. Сбор данных ЗА ПРОШЛЫЙ ГОД (Background)
         bg_year = event_time.year - 1
-        # Обработка 29 февраля
         try:
             bg_date = event_time.replace(year=bg_year)
         except ValueError:
@@ -260,8 +238,7 @@ class IonosphereCollector:
         start_bg = bg_date - timedelta(days=days_before)
         end_bg = bg_date + timedelta(days=days_after)
         
-        # Для фона всегда можно брать финальные данные (codg)
-        # Устанавливаем версию явно, чтобы не зависеть от логики _get_ionex_version
+        # Для фона используем финальные данные (codg)
         bg_df = self._fetch_tec_with_version(lat, lon, start_bg, end_bg, version="codg")
 
         # 3. Расчет статистики фона
@@ -272,7 +249,7 @@ class IonosphereCollector:
         mean_bg = bg_df['tec_value'].mean() if not bg_df.empty else 0.0
         std_bg = bg_df['tec_value'].std() if not bg_df.empty else 0.0
 
-        # 4. Расчет Z-Score для данных события (Target)
+        # 4. Расчет Z-Score
         anomaly_detected = False
         z_max = 0.0
         z_min = 0.0
@@ -299,12 +276,6 @@ class IonosphereCollector:
         else:
             details = "Недостаточно данных для расчёта аномалии"
 
-        # 5. ROTI
-        roti_df = pd.DataFrame()
-        if not target_df.empty:
-            roti_df = self.fetch_roti(lat, lon, start_target, end_target)
-
-        # Логирование
         if anomaly_detected:
             logger.critical(f"   🔴🔴🔴 ИОНОСФЕРНАЯ АНОМАЛИЯ: {details}")
         else:
@@ -313,7 +284,7 @@ class IonosphereCollector:
         return {
             'tec': target_df,
             'background': bg_df,
-            'roti': roti_df,
+            'roti': pd.DataFrame(),  # ROTI пока не реализован
             'is_anomaly': anomaly_detected,
             'z_score_max': z_max,
             'z_score_min': z_min,
@@ -323,16 +294,14 @@ class IonosphereCollector:
         }
 
     def _fetch_tec_with_version(self, lat: float, lon: float, start_time: datetime, end_time: datetime, version: str) -> pd.DataFrame:
-        """
-        Вспомогательный метод для скачивания TEC с указанной версией файла.
-        """
+        """Вспомогательный метод для скачивания TEC с указанной версией."""
         start_time = self._to_utc(start_time)
         end_time = self._to_utc(end_time)
 
         all_dfs = []
         current_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        while current_date <= end_time:
+        while current_date <= end_date:
             filepath = self._download_ionex(current_date, version)
             if filepath:
                 df = self._parse_ionex_for_point(filepath, lat, lon, current_date)
@@ -349,20 +318,10 @@ class IonosphereCollector:
 
 
 if __name__ == "__main__":
-    # Тест
     collector = IonosphereCollector(cache_dir="data/ionex_cache")
-    
-    # Координаты (например, Япония)
     lat, lon = 32.68, 130.72
+    event_time = datetime(2023, 7, 28, 7, 27, 15, tzinfo=timezone.utc)
     
-    # Время события
-    event_time = datetime(2026, 7, 28, 7, 27, 15, tzinfo=timezone.utc)
-    
-    print(f"🚀 Запуск сбора данных для ({lat}, {lon}) вокруг события {event_time}")
+    print(f"🚀 Тест: ({lat}, {lon}) {event_time}")
     result = collector.fetch_for_event(event_time, lat, lon)
-    
-    if not result['tec'].empty:
-        print(f"✅ Target: {len(result['tec'])} записей")
-        print(f"   TEC среднее: {result['tec']['tec_value'].mean():.2f} TECU")
-    else:
-        print("❌ Нет данных")
+    print(f"Аномалия: {result['is_anomaly']}, Z-max: {result['z_score_max']:.2f}")
