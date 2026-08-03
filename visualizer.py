@@ -20,16 +20,23 @@ except ImportError:
 
 
 def _get_mag_column(df):
-    """Возвращает имя колонки с магнитудой (mag, magnitude, M и т.п.)"""
+    """Возвращает имя колонки с магнитудой."""
     for col in ['mag', 'magnitude', 'M', 'Magnitude']:
         if col in df.columns:
             return col
-    # Если ничего не найдено – используем первую числовую колонку (опасно, но лучше чем ничего)
     numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
     if len(numeric_cols) > 0:
-        logger.warning(f"⚠️ Колонка магнитуды не найдена. Использую '{numeric_cols[0]}' как магнитуду.")
+        logger.warning(f"⚠️ Колонка магнитуды не найдена. Использую '{numeric_cols[0]}'.")
         return numeric_cols[0]
     raise KeyError("Не найдена колонка с магнитудой в данных.")
+
+
+def _get_depth_column(df):
+    """Возвращает имя колонки с глубиной (или None, если нет)."""
+    for col in ['depth', 'depth_km', 'Depth', 'd']:
+        if col in df.columns:
+            return col
+    return None  # глубина не обязательна
 
 
 def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
@@ -38,7 +45,12 @@ def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
         return None
 
     mag_col = _get_mag_column(df)
-    df_sorted = df.sort_values('time')  # предполагаем, что колонка 'time' есть
+    # Предполагаем, что колонка времени называется 'time'
+    if 'time' not in df.columns:
+        logger.error("Колонка 'time' не найдена в данных")
+        return None
+
+    df_sorted = df.sort_values('time')
 
     plt.figure(figsize=(8, 4))
     plt.plot(df_sorted['time'], df_sorted[mag_col], 'o-', color='royalblue', markersize=4, linewidth=1.5)
@@ -69,6 +81,18 @@ def create_interactive_report(
         return None
 
     mag_col = _get_mag_column(df)
+    depth_col = _get_depth_column(df)
+
+    if 'time' not in df.columns:
+        logger.error("Колонка 'time' не найдена в данных")
+        return None
+    if 'place' not in df.columns:
+        logger.error("Колонка 'place' не найдена в данных")
+        return None
+    if 'latitude' not in df.columns or 'longitude' not in df.columns:
+        logger.error("Колонки 'latitude' / 'longitude' не найдены")
+        return None
+
     df_sorted = df.sort_values('time')
     center_lat = df['latitude'].mean()
     center_lon = df['longitude'].mean()
@@ -91,16 +115,17 @@ def create_interactive_report(
         else:
             color = 'green'
         radius = mag ** 2
-        popup = f"""
-        <b>{row['place']}</b><br>
-        Магнитуда: {mag}<br>
-        Глубина: {row['depth']} км<br>
-        Время: {row['time']}
-        """
+
+        # Формируем popup с учётом наличия глубины
+        popup_text = f"<b>{row['place']}</b><br>Магнитуда: {mag}"
+        if depth_col is not None:
+            popup_text += f"<br>Глубина: {row[depth_col]} км"
+        popup_text += f"<br>Время: {row['time']}"
+
         folium.CircleMarker(
             location=[row['latitude'], row['longitude']],
             radius=radius,
-            popup=popup,
+            popup=popup_text,
             color=color,
             fill=True,
             fill_color=color,
@@ -151,8 +176,19 @@ def create_interactive_report(
     plotly_div = plot(fig, output_type='div', include_plotlyjs='cdn')
 
     # ========== 3. ТАБЛИЦА (DataTables) ==========
-    table_data = df_sorted[['time', 'place', mag_col, 'depth']].copy()
-    table_data.rename(columns={mag_col: 'mag'}, inplace=True)  # для единообразия
+    # Формируем список колонок для таблицы
+    table_columns = ['time', 'place', mag_col]
+    if depth_col is not None:
+        table_columns.append(depth_col)
+    # Можно добавить ещё latitude/longitude, но в таблице они обычно не нужны
+
+    table_data = df_sorted[table_columns].copy()
+    # Переименовываем для красоты
+    rename_map = {mag_col: 'mag'}
+    if depth_col is not None:
+        rename_map[depth_col] = 'depth'
+    table_data.rename(columns=rename_map, inplace=True)
+
     table_html = table_data.to_html(
         classes='table table-striped table-bordered',
         index=False,
@@ -194,7 +230,14 @@ def create_interactive_report(
     <button class="btn btn-secondary" onclick="window.print()">🖨 Печать</button>
     '''
 
-    # ========== 6. СБОРКА HTML ==========
+    # ========== 6. СТАТИСТИКА ==========
+    max_mag = df[mag_col].max()
+    mean_mag = df[mag_col].mean()
+    lst_str = ''
+    if lst_data and lst_data.get('lst_celsius') is not None:
+        lst_str = f'<p><strong>Средняя температура поверхности (LST):</strong> {lst_data["lst_celsius"]:.2f}°C</p>'
+
+    # ========== 7. СБОРКА HTML ==========
     html_template = f"""
     <!DOCTYPE html>
     <html>
@@ -225,9 +268,9 @@ def create_interactive_report(
             <div class="stats">
                 <p><strong>Период:</strong> {df['time'].min()} — {df['time'].max()}</p>
                 <p><strong>Количество событий:</strong> {len(df)}</p>
-                <p><strong>Максимальная магнитуда:</strong> {df[mag_col].max():.1f}</p>
-                <p><strong>Средняя магнитуда:</strong> {df[mag_col].mean():.2f}</p>
-                {f'<p><strong>Средняя температура поверхности (LST):</strong> {lst_data["lst_celsius"]:.2f}°C</p>' if lst_data and lst_data.get('lst_celsius') else ''}
+                <p><strong>Максимальная магнитуда:</strong> {max_mag:.1f}</p>
+                <p><strong>Средняя магнитуда:</strong> {mean_mag:.2f}</p>
+                {lst_str}
                 <p><strong>Ссылки:</strong> <a href="{usgs_url}" target="_blank">USGS</a> | <a href="{google_maps_url}" target="_blank">Google Maps</a></p>
             </div>
 
