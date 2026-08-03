@@ -5,6 +5,7 @@ telegram_sender.py — отправка отчётов в Telegram
 """
 
 import os
+import requests
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -13,6 +14,46 @@ from telegram import Bot
 from telegram.constants import ParseMode
 
 logger = logging.getLogger(__name__)
+
+def send_photo(chat_id: str, photo_bytes: bytes, caption: str = "") -> bool:
+    """Отправляет изображение (PNG) в Telegram."""
+    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN не задан")
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    files = {'photo': ('image.png', photo_bytes, 'image/png')}
+    data = {'chat_id': chat_id, 'caption': caption}
+    try:
+        response = requests.post(url, files=files, data=data, timeout=30)
+        if response.status_code != 200:
+            logger.error(f"Ошибка отправки фото: {response.text}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Исключение при отправке фото: {e}")
+        return False
+
+def send_document(chat_id: str, file_path: str, caption: str = "") -> bool:
+    """Отправляет файл (HTML) в Telegram и удаляет его после отправки."""
+    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN не задан")
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'document': f}
+            data = {'chat_id': chat_id, 'caption': caption}
+            response = requests.post(url, files=files, data=data, timeout=30)
+        os.unlink(file_path)  # удаляем временный файл
+        if response.status_code != 200:
+            logger.error(f"Ошибка отправки документа: {response.text}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Исключение при отправке документа: {e}")
+        return False
 
 # Токены из переменных окружения
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
