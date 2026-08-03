@@ -10,6 +10,9 @@ import os
 import sys
 import logging
 from datetime import datetime, timezone, timedelta
+from weather_collector import WeatherCollector
+from ionosphere_collector import IonosphereCollector
+from space_weather import SpaceWeatherCollector
 
 # Логи в stdout (GitHub Actions показывает)
 logging.basicConfig(
@@ -140,9 +143,6 @@ def main():
 # для сильных событий (M >= 5.0)
 # ═══════════════════════════════════════════════════════════════
 
-from weather_collector import WeatherCollector
-from ionosphere_collector import IonosphereCollector
-from space_weather import SpaceWeatherCollector
 
 weather = WeatherCollector()
 iono = IonosphereCollector()
