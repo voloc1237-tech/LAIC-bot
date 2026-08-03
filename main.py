@@ -8,6 +8,7 @@ main.py — ГЛАВНЫЙ ФАЙЛ LAIC-бота
 import os
 import sys
 import logging
+import pandas as pd 
 from datetime import datetime, timezone, timedelta
 
 # Логи в stdout
