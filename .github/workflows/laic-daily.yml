@@ -20,26 +20,32 @@ jobs:
           pip install -r requirements.txt
           pip install earthengine-api google-auth
 
+      # ===== ПОДГОТОВКА КЛЮЧА (МИНИФИКАЦИЯ JSON) =====
       - name: Prepare Earth Engine key
         env:
           EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
         run: |
-          # Декодируем base64 и удаляем все пробельные символы в начале и конце
-          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' > /tmp/ee-key.json
-          
-          # Проверяем результат
+          # Декодируем base64, загружаем JSON и выводим компактно (без пробелов и переносов)
+          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          json.dump(data, sys.stdout, separators=(',', ':'))
+          " > /tmp/ee-key.json
+
+          # Проверка (для отладки)
           echo "=== Первые 100 символов ==="
           head -c 100 /tmp/ee-key.json
           echo ""
-          echo "=== Размер файла ==="
+          echo "=== Размер файла (байт) ==="
           wc -c /tmp/ee-key.json
-          echo "✅ Ключ создан в /tmp/ee-key.json"
+          echo "✅ Ключ сохранён в /tmp/ee-key.json"
 
+      # ===== ОСНОВНОЙ ЗАПУСК =====
       - name: Run LAIC Analysis
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
+          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json   # Используем путь к файлу
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-          # Не передаём EARTH_ENGINE_KEY_BASE64, чтобы точно использовать путь
+          # НЕ передаём EARTH_ENGINE_KEY_BASE64, чтобы код использовал именно путь
         run: python main.py
