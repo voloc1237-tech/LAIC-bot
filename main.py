@@ -265,7 +265,7 @@ def main():
     # ═══════════════════════════════════════════════════════════════
     # 1d. ИИ-АНАЛИЗ АНОМАЛИЙ
     # ═══════════════════════════════════════════════════════════════
-
+    
     try:
         from anomaly_detector import AnomalyDetector
         from visualizer import create_anomaly_plot
@@ -273,18 +273,24 @@ def main():
     except ImportError:
         ANOMALY_AVAILABLE = False
         logger.warning("⚠️ Модуль аномалий не найден")
-
+    
     if ANOMALY_AVAILABLE and not all_events.empty:
         logger.info("\n" + "=" * 70)
         logger.info("🧠 ЭТАП 1d: ИИ-анализ аномалий")
         logger.info("=" * 70)
-    
+        
         # Собираем данные для ИИ-анализа
         events_for_ai = []
         for region_name, df in data.items():
             if df.empty:
                 continue
             for idx, row in df.iterrows():
+                # Безопасное получение LST
+                lst_data = lst_cache.get(region_name)
+                lst_celsius = 0
+                if lst_data and isinstance(lst_data, dict):
+                    lst_celsius = lst_data.get('lst_celsius', 0)
+                
                 # Формируем данные для ИИ
                 event_data = {
                     'id': row.get('id', f'event_{idx}'),
@@ -292,7 +298,7 @@ def main():
                     'magnitude': row.get('magnitude', 0),
                     'depth_km': row.get('depth_km', 0),
                     'time': row.get('time', None),
-                    'lst_celsius': lst_cache.get(region_name, {}).get('lst_celsius', 0),
+                    'lst_celsius': lst_celsius,
                     'weather': {
                         'temp_mean': row.get('temp_mean', 0),
                         'humidity_mean': row.get('humidity_mean', 0)
@@ -304,18 +310,18 @@ def main():
                     }
                 }
                 events_for_ai.append(event_data)
-    
+        
         if len(events_for_ai) >= 10:
             detector = AnomalyDetector(contamination=0.1)
             anomaly_df = detector.analyze_events(events_for_ai)
-        
+            
             if not anomaly_df.empty:
                 # Подсчитываем аномалии по регионам
                 anomaly_counts = anomaly_df.groupby('region')['is_anomaly'].sum().to_dict()
                 for region, count in anomaly_counts.items():
                     if count > 0:
                         logger.info(f"   🔴 {region}: обнаружено {count} аномалий")
-            
+                
                 # Отправляем график с аномалиями
                 if TG_AVAILABLE and chat_id:
                     for region_name in anomaly_df['region'].unique():
@@ -332,6 +338,7 @@ def main():
             logger.info(f"ℹ️ ИИ-анализ пропущен (нужно ≥10 событий, собрано {len(events_for_ai)})")
     else:
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
+    
     
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
