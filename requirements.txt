@@ -1,4 +1,4 @@
-
+quakeion>=0.1.0
 # Новые
 openmeteo-requests>=1.0.0
 retry-requests>=2.0.0
