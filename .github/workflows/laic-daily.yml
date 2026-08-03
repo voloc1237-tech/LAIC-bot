@@ -45,7 +45,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json   # Используем путь к файлу
+          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json          # оставляем путь
+          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}   # ДОБАВЛЯЕМ!
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-          # НЕ передаём EARTH_ENGINE_KEY_BASE64, чтобы код использовал именно путь
         run: python main.py
