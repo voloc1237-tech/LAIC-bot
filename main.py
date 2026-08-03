@@ -160,6 +160,7 @@ def main():
     total_filtered = sum(len(df) for df in data.values())
     logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
 
+    
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
     # ═══════════════════════════════════════════════════════════════
@@ -168,7 +169,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("🛰️ ЭТАП 1b: Сбор спутниковых данных (GEE)")
         logger.info("=" * 70)
-
+    
         for region_name, region_data in data.items():
             if not region_data.empty:
                 last_event = region_data.iloc[0]
@@ -178,13 +179,20 @@ def main():
                     end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
                     start_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
                     lst_data = get_lst_data(lat, lon, start_date, end_date)
-                    lst_cache[region_name] = lst_data
-                    logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C (изобр: {lst_data['count']})")
+                    
+                    if lst_data.get('lst_celsius') is not None:
+                        lst_cache[region_name] = lst_data
+                        logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C (изобр: {lst_data['count']})")
+                    else:
+                        error_msg = lst_data.get('error', 'Неизвестная ошибка')
+                        logger.warning(f"⚠️ Нет LST для {region_name}: {error_msg}")
+                        lst_cache[region_name] = None
                 except Exception as e:
-                    logger.warning(f"⚠️ Не удалось получить LST для {region_name}: {e}")
+                    logger.warning(f"⚠️ Ошибка LST для {region_name}: {e}")
                     lst_cache[region_name] = None
     else:
         logger.info("ℹ️ Пропускаем спутниковые данные (GEE недоступен)")
+    
 
     # ═══════════════════════════════════════════════════════════════
     # 1c. СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (погода, ионосфера, космос)
