@@ -33,7 +33,12 @@ analysis:
   precursor_window_days: 7
   swarm_detection_hours: 72
   energy_window_days: 14
-  
+
+  # Режим сбора данных
+  global_mode: false               # false – только регионы, true – весь мир
+  global_min_magnitude: 4.5        # для глобального режима
+  detail_min_magnitude: 5.0        # порог для сбора погоды/ионосферы
+
   risk_levels:
     low: 25
     moderate: 45
@@ -55,4 +60,3 @@ cache:
   enabled: true
   directory: "data/cache"
   max_age_hours: 6
-  
