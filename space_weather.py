@@ -56,8 +56,13 @@ class SpaceWeatherCollector:
             return cached
         
         # Попытка 1: NOAA SWPC
+         url = "https://services.swpc.noaa.gov/json/goes/primary/xray-flux-1-day.json"
+        # ИЛИ
         url = "https://services.swpc.noaa.gov/json/goes/primary/xray-flares-7-day.json" 
-        #url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+        #ИЛИ
+        url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+        #ИЛИ
+        url = "https://services.swpc.noaa.gov/products/solar-radio-flux.json"
         try:
             resp = self.session.get(url, timeout=30)
             resp.raise_for_status()
