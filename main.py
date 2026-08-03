@@ -426,12 +426,16 @@ def main():
                     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
                     if token and chat_id:
                         url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        data = {
-                            'chat_id': chat_id,
-                            'text': forecast_msg,
-                            'parse_mode': 'HTML'
-                        }
-                        response = requests.post(url, data=data, timeout=30)
+                        # ✅ ПРАВИЛЬНО (используем другое имя):
+                        payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
+                        response = requests.post(url, data=payload)
+                        
+                        #data = {
+                           #'chat_id': chat_id,
+                           #'text': forecast_msg,
+                            #'parse_mode': 'HTML'
+                        #}
+                        #response = requests.post(url, data=data, timeout=30)
                         if response.status_code == 200:
                             logger.info("✅ Прогноз отправлен в Telegram")
                         else:
