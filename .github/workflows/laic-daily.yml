@@ -20,7 +20,8 @@ jobs:
           pip install -r requirements.txt
           pip install quakeion 
           pip install earthengine-api google-auth
-
+          pip install tec==0.0.19
+          pip install tensorflow scikit-learn joblib
       # ===== ПОДГОТОВКА КЛЮЧА (МИНИФИКАЦИЯ JSON) =====
       - name: Prepare Earth Engine key
         env:
