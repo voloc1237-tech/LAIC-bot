@@ -263,6 +263,77 @@ def main():
         logger.info("ℹ️ Нет сильных событий для детального сбора данных.")
 
     # ═══════════════════════════════════════════════════════════════
+    # 1d. ИИ-АНАЛИЗ АНОМАЛИЙ
+    # ═══════════════════════════════════════════════════════════════
+
+    try:
+        from anomaly_detector import AnomalyDetector
+        from visualizer import create_anomaly_plot
+        ANOMALY_AVAILABLE = True
+    except ImportError:
+        ANOMALY_AVAILABLE = False
+        logger.warning("⚠️ Модуль аномалий не найден")
+
+    if ANOMALY_AVAILABLE and not all_events.empty:
+        logger.info("\n" + "=" * 70)
+        logger.info("🧠 ЭТАП 1d: ИИ-анализ аномалий")
+        logger.info("=" * 70)
+    
+        # Собираем данные для ИИ-анализа
+        events_for_ai = []
+        for region_name, df in data.items():
+            if df.empty:
+                continue
+            for idx, row in df.iterrows():
+                # Формируем данные для ИИ
+                event_data = {
+                    'id': row.get('id', f'event_{idx}'),
+                    'region': region_name,
+                    'magnitude': row.get('magnitude', 0),
+                    'depth_km': row.get('depth_km', 0),
+                    'time': row.get('time', None),
+                    'lst_celsius': lst_cache.get(region_name, {}).get('lst_celsius', 0),
+                    'weather': {
+                        'temp_mean': row.get('temp_mean', 0),
+                        'humidity_mean': row.get('humidity_mean', 0)
+                    },
+                    'kp': {
+                        'mean': row.get('kp_mean', 0),
+                        'max': row.get('kp_max', 0),
+                        'std': row.get('kp_std', 0)
+                    }
+                }
+                events_for_ai.append(event_data)
+    
+        if len(events_for_ai) >= 10:
+            detector = AnomalyDetector(contamination=0.1)
+            anomaly_df = detector.analyze_events(events_for_ai)
+        
+            if not anomaly_df.empty:
+                # Подсчитываем аномалии по регионам
+                anomaly_counts = anomaly_df.groupby('region')['is_anomaly'].sum().to_dict()
+                for region, count in anomaly_counts.items():
+                    if count > 0:
+                        logger.info(f"   🔴 {region}: обнаружено {count} аномалий")
+            
+                # Отправляем график с аномалиями
+                if TG_AVAILABLE and chat_id:
+                    for region_name in anomaly_df['region'].unique():
+                        region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
+                        if len(region_anomalies) > 1:
+                            img_bytes = create_anomaly_plot(region_anomalies, region_name)
+                            if img_bytes:
+                                send_photo(chat_id, img_bytes, 
+                                          caption=f"🧠 ИИ-анализ аномалий — {region_name}")
+                                logger.info(f"✅ График аномалий для {region_name} отправлен")
+            else:
+                logger.info("ℹ️ Недостаточно данных для ИИ-анализа")
+        else:
+            logger.info(f"ℹ️ ИИ-анализ пропущен (нужно ≥10 событий, собрано {len(events_for_ai)})")
+    else:
+        logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
+    
+    # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
     logger.info("\n" + "=" * 70)
