@@ -111,7 +111,7 @@ class GEEInitializer:
         return False
 
 
-def get_lst_data(lat: float, lon: float, date_start: str, date_end: str):
+def get_lst_data(lat, lon, date_start, date_end):
     """
     Получить температуру поверхности (LST) из MODIS.
     
@@ -126,30 +126,80 @@ def get_lst_data(lat: float, lon: float, date_start: str, date_end: str):
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
-    # Точка интереса
-    point = ee.Geometry.Point([lon, lat])
-    
-    # Коллекция MODIS LST
-    collection = ee.ImageCollection("MODIS/061/MOD11A1") \
-        .filterBounds(point) \
-        .filterDate(date_start, date_end) \
-        .select('LST_Day_1km')
-    
-    # Берём среднее за период
-    mean_lst = collection.mean()
-    
-    # Получаем значение в точке
-    sample = mean_lst.sample(point, 1000).first()
-    
-    # Переводим в градусы Цельсия (MODIS хранит в Кельвинах × 0.02)
-    lst_raw = sample.get('LST_Day_1km').getInfo()
-    lst_celsius = (lst_raw * 0.02) - 273.15 if lst_raw else None
-    
-    return {
-        'lst_celsius': round(lst_celsius, 2) if lst_celsius else None,
-        'count': collection.size().getInfo(),
-        'period': f"{date_start} to {date_end}"
-    }
+    try:
+        # Точка интереса
+        point = ee.Geometry.Point([lon, lat])
+        
+        # Коллекция MODIS LST
+        collection = ee.ImageCollection("MODIS/061/MOD11A1") \
+            .filterBounds(point) \
+            .filterDate(date_start, date_end) \
+            .select('LST_Day_1km')
+        
+        # Проверяем, есть ли изображения
+        count = collection.size().getInfo()
+        if count == 0:
+            logger.warning(f"⚠️ Нет изображений MODIS для ({lat:.2f}, {lon:.2f}) за {date_start} — {date_end}")
+            return {
+                'lst_celsius': None,
+                'count': 0,
+                'period': f"{date_start} to {date_end}",
+                'error': 'Нет данных MODIS'
+            }
+        
+        # Берём среднее за период
+        mean_lst = collection.mean()
+        
+        # Получаем значение в точке
+        sample = mean_lst.sample(point, 1000).first()
+        
+        # Проверяем, есть ли выборка
+        if sample is None:
+            logger.warning(f"⚠️ Нет LST данных для ({lat:.2f}, {lon:.2f}) — возможно, точка в океане или облачно")
+            return {
+                'lst_celsius': None,
+                'count': count,
+                'period': f"{date_start} to {date_end}",
+                'error': 'Нет данных в точке'
+            }
+        
+        # Проверяем, что в выборке есть данные
+        try:
+            lst_raw = sample.get('LST_Day_1km').getInfo()
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось получить значение LST: {e}")
+            return {
+                'lst_celsius': None,
+                'count': count,
+                'period': f"{date_start} to {date_end}",
+                'error': str(e)
+            }
+        
+        # Переводим в градусы Цельсия (MODIS хранит в Кельвинах × 0.02)
+        if lst_raw is not None:
+            lst_celsius = (lst_raw * 0.02) - 273.15
+            logger.info(f"🌡️ LST: {lst_celsius:.2f}°C (изображений: {count})")
+        else:
+            lst_celsius = None
+            logger.warning(f"⚠️ LST_raw равен None для ({lat:.2f}, {lon:.2f})")
+        
+        return {
+            'lst_celsius': round(lst_celsius, 2) if lst_celsius is not None else None,
+            'count': count,
+            'period': f"{date_start} to {date_end}",
+            'error': None
+        }
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка получения LST: {e}")
+        return {
+            'lst_celsius': None,
+            'count': 0,
+            'period': f"{date_start} to {date_end}",
+            'error': str(e)
+        }
+
+
 
 
 # ═══════════════════════════════════════════════════════
