@@ -29,7 +29,7 @@ regions:
 
 # === ПАРАМЕТРЫ АНАЛИЗА ===
 analysis:
-  history_days: 365
+  history_days: 90
   precursor_window_days: 7
   swarm_detection_hours: 72
   energy_window_days: 14
