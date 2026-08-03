@@ -1,107 +1,156 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ionosphere_collector.py — сбор TEC и ROTI через tec.io (NASA CDDIS)
+ionosphere_collector.py — сбор TEC через gnssanalysis (IONEX)
+Использует библиотеку gnssanalysis от Geoscience Australia.
 """
 
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 import logging
-import os
-import tempfile
-from tec import Tec, download_ionex
+import requests
+from gnssanalysis.ionex import IonexMap
 
 logger = logging.getLogger(__name__)
 
 
 class IonosphereCollector:
     """
-    Сборщик ионосферных данных через NASA CDDIS.
-    Использует библиотеку tec.io для парсинга IONEX-файлов.
+    Сборщик ионосферных данных (TEC) через IONEX-файлы.
+    Использует gnssanalysis для парсинга.
     """
+    
+    # CDDIS FTP сервер для IONEX (требуется анонимный доступ)
+    CDDIS_URL = "https://cddis.nasa.gov/archive/gnss/products/ionex"
     
     def __init__(self, cache_dir="data/ionex_cache"):
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         logger.info(f"🛰️ Ионосфера: кэш IONEX в {cache_dir}")
     
-    def fetch_tec_for_point(self, lat, lon, start_time, end_time, sampling='hourly'):
+    def _get_ionex_filename(self, date, version='codg'):
+        """
+        Формирует имя IONEX-файла по дате.
+        Формат: codgYYYYDDD.01i (например, codg2023001.01i)
+        """
+        day_of_year = date.timetuple().tm_yday
+        year_short = str(date.year)[-2:]
+        return f"{version}{year_short}{day_of_year:03d}.01i"
+    
+    def _download_ionex(self, date):
+        """
+        Скачивает IONEX-файл с CDDIS.
+        """
+        filename = self._get_ionex_filename(date)
+        local_path = os.path.join(self.cache_dir, filename)
+        
+        # Проверяем кэш
+        if os.path.exists(local_path):
+            logger.debug(f"📂 IONEX файл в кэше: {filename}")
+            return local_path
+        
+        # Формируем URL
+        # IONEX файлы организованы по годам и дням
+        year = date.strftime('%Y')
+        day_of_year = date.timetuple().tm_yday
+        url = f"{self.CDDIS_URL}/{year}/{day_of_year:03d}/{filename}"
+        
+        try:
+            logger.info(f"📥 Скачивание IONEX: {url}")
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            
+            with open(local_path, 'wb') as f:
+                f.write(response.content)
+            
+            logger.info(f"✅ IONEX сохранён: {local_path}")
+            return local_path
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.warning(f"⚠️ IONEX файл не найден: {filename}")
+            else:
+                logger.warning(f"⚠️ Ошибка скачивания IONEX: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка скачивания IONEX: {e}")
+            return None
+    
+    def fetch_tec_for_point(self, lat, lon, start_time, end_time):
         """
         Получить VTEC (вертикальный TEC) для указанной точки за период.
         Возвращает DataFrame с индексами времени и колонкой 'tec'.
         """
-        try:
-            # Скачиваем IONEX-файлы за период
-            # tec.io умеет скачивать файлы с NASA CDDIS
-            ionex_files = download_ionex(
-                start=start_time,
-                end=end_time,
-                output_dir=self.cache_dir,
-                source='cddis'
-            )
+        if not isinstance(start_time, datetime):
+            start_time = pd.to_datetime(start_time).to_pydatetime()
+        if not isinstance(end_time, datetime):
+            end_time = pd.to_datetime(end_time).to_pydatetime()
+        
+        # Для IONEX выбираем середину периода (или каждый день)
+        current_date = start_time.replace(hour=12, minute=0, second=0)
+        records = []
+        
+        while current_date <= end_time:
+            # Скачиваем IONEX-файл для этой даты
+            ionex_path = self._download_ionex(current_date)
             
-            if not ionex_files:
-                logger.warning("⚠️ IONEX-файлы не найдены")
-                return pd.DataFrame()
-            
-            records = []
-            for file_path in ionex_files:
+            if ionex_path:
                 try:
-                    # Парсим IONEX-файл
-                    tec_data = Tec(file_path)
+                    # Парсим IONEX
+                    ionmap = IonexMap.from_file(ionex_path)
                     
-                    # Получаем TEC в указанной точке
-                    # tec.io возвращает TEC в TECU (1 TECU = 10^16 эл/м²)
-                    tec_value = tec_data.get_value(lat, lon)
+                    # Получаем TEC для заданной точки
+                    # IONEX обычно содержит карты каждый 2 часа
+                    for hour in range(0, 24, 2):
+                        time_query = current_date.replace(hour=hour, minute=0, second=0)
+                        try:
+                            tec_val = ionmap.get_tec(lat=lat, lon=lon, time=time_query)
+                            if tec_val is not None and not np.isnan(tec_val):
+                                records.append({
+                                    'time': time_query,
+                                    'tec': float(tec_val),
+                                    'lat': lat,
+                                    'lon': lon
+                                })
+                        except Exception as e:
+                            logger.debug(f"Ошибка получения TEC для {time_query}: {e}")
+                            continue
                     
-                    # Время из имени файла или из данных
-                    # Извлекаем дату из имени файла (например, igs12345.20i)
-                    date_str = os.path.basename(file_path).split('.')[0][3:8]
-                    year = int(f"20{date_str[4:6]}")  # 20 + последние 2 цифры
-                    day_of_year = int(date_str[0:3])
-                    dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1)
+                    logger.info(f"🛰️ TEC: {len(records)} записей для ({lat:.2f}, {lon:.2f}) на {current_date.date()}")
                     
-                    if tec_value is not None:
-                        records.append({
-                            'time': dt,
-                            'tec': tec_value,
-                            'lat': lat,
-                            'lon': lon
-                        })
-                
                 except Exception as e:
-                    logger.debug(f"Ошибка парсинга {file_path}: {e}")
-                    continue
+                    logger.warning(f"⚠️ Ошибка парсинга IONEX {ionex_path}: {e}")
             
-            df = pd.DataFrame(records)
-            if not df.empty:
-                df.set_index('time', inplace=True)
-                df = df.resample('1h').mean() if sampling == 'hourly' else df
-                logger.info(f"🛰️ TEC: {len(df)} записей для ({lat:.2f}, {lon:.2f})")
-                return df
-            
+            # Переход к следующему дню
+            current_date += timedelta(days=1)
+        
+        if not records:
+            logger.warning(f"⚠️ Нет TEC данных для ({lat:.2f}, {lon:.2f}) за период")
             return pd.DataFrame()
-            
-        except ImportError:
-            logger.warning("⚠️ Библиотека 'tec' не установлена. Установите: pip install tec")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка TEC: {e}")
-            return pd.DataFrame()
+        
+        df = pd.DataFrame(records)
+        df.set_index('time', inplace=True)
+        df.sort_index(inplace=True)
+        
+        # Интерполяция пропущенных значений (если есть)
+        if df['tec'].isnull().any():
+            df['tec'] = df['tec'].interpolate(method='time')
+        
+        logger.info(f"🛰️ TEC: {len(df)} записей для ({lat:.2f}, {lon:.2f})")
+        return df
     
     def fetch_roti(self, lat, lon, start_time, end_time):
         """
         Получить ROTI (Rate of TEC Index) — показатель ионосферных возмущений.
-        ROTI вычисляется как стандартное отклонение TEC за 15-минутные окна.
+        Вычисляется как скользящее стандартное отклонение TEC.
         """
-        tec_df = self.fetch_tec_for_point(lat, lon, start_time, end_time, sampling='hourly')
+        tec_df = self.fetch_tec_for_point(lat, lon, start_time, end_time)
         if tec_df.empty:
             return pd.DataFrame()
         
-        # ROTI = скользящее стандартное отклонение TEC за 15 минут
-        # При часовых данных используем окно в 4 точки (1 час)
-        # Для более точного ROTI нужны данные с частотой 30-60 секунд
+        # ROTI — стандартное отклонение TEC за окно (для часовых данных — окно 4 часа)
         tec_df['roti'] = tec_df['tec'].rolling(window=4, min_periods=2).std()
         
         logger.info(f"🛰️ ROTI: {len(tec_df)} записей")
