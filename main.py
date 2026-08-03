@@ -9,7 +9,7 @@ main.py — ГЛАВНЫЙ ФАЙЛ LAIC-бота
 import os
 import sys
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta  # ← ДОБАВИЛИ timedelta
 
 # Логи в stdout (GitHub Actions показывает)
 logging.basicConfig(
@@ -18,6 +18,16 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('LAIC')
+
+# ═══════════════════════════════════════════════════════════════
+# GEE — опционально
+# ═══════════════════════════════════════════════════════════════
+try:
+    from ee_collector import GEEInitializer, get_lst_data
+    GEE_AVAILABLE = True
+except ImportError:
+    GEE_AVAILABLE = False
+    logger.warning("⚠️ Earth Engine модуль не найден")
 
 
 def main():
@@ -37,6 +47,23 @@ def main():
     
     logger.info("✅ Токены Telegram найдены")
     
+    # ═══════════════════════════════════════════════════════════════
+    # ПОДКЛЮЧЕНИЕ GOOGLE EARTH ENGINE
+    # ═══════════════════════════════════════════════════════════════
+    
+    ee_initialized = False
+    if GEE_AVAILABLE:
+        try:
+            ee_initialized = GEEInitializer.init()
+            if ee_initialized:
+                logger.info("✅ Earth Engine подключен!")
+            else:
+                logger.warning("⚠️ Earth Engine не инициализирован — работаем без спутниковых данных")
+        except Exception as e:
+            logger.warning(f"⚠️ Earth Engine ошибка: {e}")
+    else:
+        logger.info("ℹ️ Earth Engine не настроен")
+    
     # Загрузка настроек
     import yaml
     with open('config/settings.yaml', 'r', encoding='utf-8') as f:
@@ -44,7 +71,7 @@ def main():
     logger.info(f"✅ Настройки загружены: {len(settings['regions'])} регионов")
     
     # ═══════════════════════════════════════════════════════════════
-    # 1. СБОР ДАННЫХ
+    # 1. СБОР ДАННЫХ USGS
     # ═══════════════════════════════════════════════════════════════
     
     logger.info("\n" + "=" * 70)
@@ -56,6 +83,36 @@ def main():
     
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
+    
+    # ═══════════════════════════════════════════════════════════════
+    # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (GEE) — если доступен
+    # ═══════════════════════════════════════════════════════════════
+    
+    if ee_initialized:
+        logger.info("\n" + "=" * 70)
+        logger.info("🛰️ ЭТАП 1b: Сбор спутниковых данных (GEE)")
+        logger.info("=" * 70)
+        
+        for region_name, region_data in data.items():
+            if not region_data.empty:
+                # Берём последнее событие
+                last_event = region_data.iloc[0]
+                lat = last_event['latitude']
+                lon = last_event['longitude']
+                
+                try:
+                    # Температура за последние 7 дней
+                    end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                    start_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
+                    
+                    lst_data = get_lst_data(lat, lon, start_date, end_date)
+                    
+                    logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C (изображений: {lst_data['count']})")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось получить LST для {region_name}: {e}")
+    else:
+        logger.info("ℹ️ Пропускаем спутниковые данные (GEE недоступен)")
     
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ
@@ -121,4 +178,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-  
