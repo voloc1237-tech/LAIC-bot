@@ -20,18 +20,26 @@ jobs:
           pip install -r requirements.txt
           pip install earthengine-api google-auth
 
-      # ===== ОЧИСТКА BASE64 И СОЗДАНИЕ ФАЙЛА =====
+      # ===== ПОДГОТОВКА КЛЮЧА С ОЧИСТКОЙ И МИНИФИКАЦИЕЙ ЧЕРЕЗ PYTHON =====
       - name: Prepare Earth Engine key
         env:
           EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
         run: |
-          # Удаляем все возможные "мусорные" символы: пробелы, табы, переводы строк и т.д.
+          # Удаляем все пробелы, табы, переводы строк и другие непечатаемые символы из base64
           CLEAN_BASE64=$(echo "$EARTH_ENGINE_KEY_BASE64" | tr -d '\n\r\t ' | sed 's/[^A-Za-z0-9+\/=]//g')
           
-          # Декодируем и минифицируем JSON
-          echo "$CLEAN_BASE64" | base64 -d | jq -c . > /tmp/ee-key.json
+          # Декодируем base64 и минифицируем JSON с помощью Python (безопасно для управляющих символов)
+          echo "$CLEAN_BASE64" | base64 -d | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              json.dump(data, sys.stdout, separators=(',', ':'))
+          except Exception as e:
+              print(f'Ошибка при обработке JSON: {e}', file=sys.stderr)
+              sys.exit(1)
+          " > /tmp/ee-key.json
           
-          # Проверка (для отладки)
+          # Проверка результата
           echo "=== Первые 100 символов ключа ==="
           head -c 100 /tmp/ee-key.json
           echo ""
@@ -44,7 +52,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json   # Передаём путь, а не base64
+          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-          # Намеренно не передаём EARTH_ENGINE_KEY_BASE64, чтобы код использовал путь
+          # НЕ передаём EARTH_ENGINE_KEY_BASE64, чтобы код использовал путь
         run: python main.py
