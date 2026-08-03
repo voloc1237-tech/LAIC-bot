@@ -67,13 +67,17 @@ class IonosphereCollector:
         """Получает TEC для точки."""
         if self.gnss_available:
             try:
-                return self._fetch_real_tec(lat, lon, start_time, end_time)
+                real_df = self._fetch_real_tec(lat, lon, start_time, end_time)
+                if not real_df.empty:
+                    logger.info(f"🛰️ Реальные TEC для ({lat:.2f}, {lon:.2f}): {len(real_df)} записей")
+                    return real_df
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка реальных данных: {e}")
         
-        # Используем синтетические данные
+        # Если реальные не получены — используем синтетику
         logger.info(f"🔄 Использую синтетические TEC для ({lat:.2f}, {lon:.2f})")
         return self._generate_synthetic_tec(lat, lon, start_time, end_time)
+    
 
     def _fetch_real_tec(self, lat, lon, start_time, end_time) -> pd.DataFrame:
         """Реальная загрузка через gnssanalysis."""
