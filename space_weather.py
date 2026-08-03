@@ -176,7 +176,40 @@ class SpaceWeatherCollector:
         
         logger.warning("⚠️ Dst данные не получены")
         return pd.DataFrame()
-    
+
+    def fetch_dst_kyoto(self, start_date, end_date):
+        """Получить Dst из Kyoto WDC (альтернативный источник)."""
+        try:
+            # Используем архив Kyoto WDC в текстовом формате
+            # (для примера – заглушка, нужно парсить реальный файл)
+            url = "https://wdc.kugi.kyoto-u.ac.jp/dst_final/2026/202608.dst"
+            resp = self.session.get(url, timeout=30)
+            if resp.status_code == 200:
+                # Парсим текстовый файл
+                records = []
+                for line in resp.text.splitlines():
+                    if not line.strip() or line.startswith('#'):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            year = int(parts[0][:4])
+                            day_of_year = int(parts[0][4:7])
+                            hour = int(parts[0][7:9])
+                            dst_val = float(parts[1]) if parts[1] else None
+                            if dst_val is not None:
+                                dt = datetime(year, 1, 1) + timedelta(days=day_of_year-1, hours=hour)
+                                if start_date <= dt <= end_date:
+                                    records.append({'time': dt, 'dst': dst_val})
+                        except (ValueError, IndexError):
+                            continue
+                if records:
+                    df = pd.DataFrame(records)
+                    df.set_index('time', inplace=True)
+                    return df
+        except Exception as e:
+            logger.warning(f"⚠️ Dst Kyoto: {e}")
+        return pd.DataFrame()
     # ═══════════════════════════════════════════════════════
     # 3. F10.7 (солнечный поток)
     # ═══════════════════════════════════════════════════════
