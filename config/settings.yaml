@@ -29,15 +29,15 @@ regions:
 
 # === ПАРАМЕТРЫ АНАЛИЗА ===
 analysis:
-  history_days: 30
+  history_days: 365
   precursor_window_days: 7
   swarm_detection_hours: 72
   energy_window_days: 14
 
-  # Режим сбора данных
-  global_mode: false               # false – только регионы, true – весь мир
-  global_min_magnitude: 4.5        # для глобального режима
-  detail_min_magnitude: 5.0        # порог для сбора погоды/ионосферы
+  # ===== ГЛОБАЛЬНЫЙ РЕЖИМ =====
+  global_mode: true              # true – собираем весь мир, false – только регионы
+  global_min_magnitude: 4.5      # минимальная магнитуда для глобального сбора
+  detail_min_magnitude: 5.0      # порог для сбора погоды/ионосферы/космоса
 
   risk_levels:
     low: 25
@@ -49,6 +49,9 @@ analysis:
     min_events_for_trend: 5
     trend_significance: 0.05
     magnitude_acceleration_threshold: 0.3
+
+
+
 
 # === TELEGRAM ===
 telegram:
