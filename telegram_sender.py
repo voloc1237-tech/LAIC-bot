@@ -115,6 +115,22 @@ class TelegramSender:
                 f"{emoji} <b>{region_name}</b> "
                 f"<code>{risk_score:.0f}/100</code>"
             )
+
+            
+            # После блока "По регионам", перед итоговой статистикой:
+
+            # Добавляем блок с аномалиями (если есть)
+            anomaly_results = [r for r in results if r.get('type') == 'anomaly']
+            if anomaly_results:
+                lines.append("🧠 <b>ОБНАРУЖЕННЫЕ АНОМАЛИИ:</b>")
+                for anomaly in anomaly_results:
+                    region = anomaly.get('region', 'Unknown')
+                    count = anomaly.get('anomaly_count', 0)
+                    if count > 0:
+                        lines.append(f"  🔴 {region}: {count} аномалий")
+                    else:
+                        lines.append(f"  ✅ {region}: аномалий не обнаружено")
+                lines.append("")
             
             # Детали — безопасное получение stats
             stats = r.get('stats', {})
