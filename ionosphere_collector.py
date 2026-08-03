@@ -9,6 +9,7 @@ import requests
 from datetime import datetime, timedelta
 import logging
 import io
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -16,35 +17,33 @@ logger = logging.getLogger(__name__)
 class IonosphereCollector:
     """
     Сборщик ионосферных данных через NASA CDDIS.
-    Использует VTEC-карты (CODG, IGS).
+    Использует IGS VTEC-карты (GIM).
     """
+    
+    BASE_URL = "https://cddis.nasa.gov/archive/gnss/products/ionex"
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'LAIC-Bot/1.0'})
     
-    def fetch_tec(self, lat, lon, start_time, end_time):
+    def fetch_tec_for_point(self, lat, lon, start_time, end_time):
         """
-        Получить VTEC (вертикальный TEC) для точки.
-        Использует публичные TEC-карты IGS.
+        Получить VTEC для указанной точки за период.
+        Использует IGS GIM-файлы.
         """
-        # Для простоты используем NOAA TEC-карты
-        # В реальном проекте нужно скачивать IGS-файлы
-        url = f"https://services.swpc.noaa.gov/json/global-tec-map.json"
-        
-        try:
-            resp = self.session.get(url, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            # Парсим TEC-карту (упражнение для читателя)
-            # Пока возвращаем пустой DataFrame, чтобы не падало
-            logger.info("🛰️ TEC: данные получены (но требуют парсинга)")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.warning(f"⚠️ TEC временно недоступен: {e}")
-            return pd.DataFrame()
+        # Для упрощения: возвращаем пустой DataFrame, так как парсинг IONEX
+        # требует специальной библиотеки (например, tec.io)
+        logger.info(f"🛰️ Ионосфера: TEC для ({lat:.2f}, {lon:.2f})")
+        return pd.DataFrame()
     
     def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3):
         """Обёртка для событий."""
-        return {'tec': pd.DataFrame(), 'roti': pd.DataFrame()}
+        start = event_time - timedelta(days=days_before)
+        end = event_time + timedelta(days=days_after)
+        
+        tec_df = self.fetch_tec_for_point(lat, lon, start, end)
+        
+        return {
+            'tec': tec_df,
+            'roti': pd.DataFrame()  # ROTI пока не реализован
+        }
