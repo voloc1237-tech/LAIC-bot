@@ -142,19 +142,32 @@ class TelegramSender:
                     'energy_7d': r.get('energy_7d', 0)
                 }
             
+            # Детали — улучшенные
             details = []
+            stats = r.get('stats', {})
             
             if stats.get('max_mag_7d', 0) > 0:
                 details.append(f"  Mmax7д={stats['max_mag_7d']:.1f}")
             if stats.get('events_24h', 0) > 0:
                 details.append(f"  N24ч={stats['events_24h']}")
-            if r.get('swarm', {}).get('is_swarm', False):
+            if stats.get('energy_anomaly', False):
+                details.append(f"  ⚡ Аномалия энергии!")
+            if stats.get('swarm_detected', False):
                 details.append(f"  ⚡ РОЙ!")
-            if r.get('magnitude_trend', {}).get('trend_detected', False):
-                details.append(f"  📈 тренд↑")
+            if stats.get('trend_detected', False):
+                details.append(f"  📈 Тренд↑")
+            if stats.get('silence_anomaly', False):
+                details.append(f"  🔇 Тишина")
             
-            if details:
-                lines.append(' |'.join(details))
+            # Факторы риска
+            risk_factors = r.get('risk_factors', '')
+            if risk_factors and risk_factors != 'Нет явных факторов':
+                details.append(f"  📌 {risk_factors}")
+            
+            # Рекомендация
+            recommendation = r.get('recommendation', '')
+            if recommendation:
+                details.append(f"  💡 {recommendation}")
             
             # Значимые события
             significant_events = r.get('significant_events', [])
