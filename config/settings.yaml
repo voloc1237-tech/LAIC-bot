@@ -29,34 +29,36 @@ regions:
 
 # === ПАРАМЕТРЫ АНАЛИЗА ===
 analysis:
-  history_days: 45
+  # Основные параметры
+  history_days: 45                 # оптимально для скорости (можно 60-90)
   precursor_window_days: 7
   swarm_detection_hours: 72
   energy_window_days: 14
   
+  # Фильтрация афтершоков
   aftershock:
     enabled: true
     time_window_days: 7
     distance_km: 50
     mag_threshold: 0.5
-  # ===== ГЛОБАЛЬНЫЙ РЕЖИМ =====
-  global_mode: true              # true – собираем весь мир, false – только регионы
-  global_min_magnitude: 5.0      # минимальная магнитуда для глобального сбора
-  detail_min_magnitude: 6.0      # порог для сбора погоды/ионосферы/космоса
 
+  # ===== ГЛОБАЛЬНЫЙ РЕЖИМ =====
+  global_mode: true                # true – весь мир, false – только регионы
+  global_min_magnitude: 5.0        # порог для глобального сбора (меньше = больше событий)
+  detail_min_magnitude: 6.0        # порог для сбора погоды/Kp/F10.7 (экономит время)
+
+  # Уровни риска
   risk_levels:
     low: 25
     moderate: 45
     high: 65
     critical: 80
 
+  # Аномалии
   anomaly:
     min_events_for_trend: 5
     trend_significance: 0.05
     magnitude_acceleration_threshold: 0.3
-
-
-
 
 # === TELEGRAM ===
 telegram:
