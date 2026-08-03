@@ -132,6 +132,82 @@ def main():
     else:
         logger.info("ℹ️ Пропускаем спутниковые данные (GEE недоступен)")
 
+    
+    # После этапа 1b, перед анализом
+
+# ═══════════════════════════════════════════════════════════════
+# 1c. СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (погода, ионосфера, космическая погода)
+# для сильных событий (M >= 5.0)
+# ═══════════════════════════════════════════════════════════════
+
+from weather_collector import WeatherCollector
+from ionosphere_collector import IonosphereCollector
+from space_weather import SpaceWeatherCollector
+
+weather = WeatherCollector()
+iono = IonosphereCollector()
+space = SpaceWeatherCollector()
+
+# Словари для хранения собранных данных по каждому событию
+event_weather = {}
+event_iono = {}
+event_space = {}
+
+# Определим порог магнитуды для детального анализа
+min_mag_for_detail = settings.get('analysis', {}).get('detail_min_magnitude', 5.0)
+
+if not data.empty:
+    # Объединим все регионы в один DataFrame (если глобальный режим)
+    if 'global' in data:
+        all_events = data['global']
+    else:
+        all_events = pd.concat(data.values(), ignore_index=True)
+    
+    # Выберем сильные события
+    strong_events = all_events[all_events['magnitude'] >= min_mag_for_detail]
+    logger.info(f"📌 Сильных событий (M≥{min_mag_for_detail}): {len(strong_events)}")
+    
+    for idx, row in strong_events.iterrows():
+        event_id = row['id']
+        lat = row['latitude']
+        lon = row['longitude']
+        event_time = row['time']
+        mag = row['magnitude']
+        
+        logger.info(f"🔍 Сбор данных для события {event_id} M{mag:.1f} в {event_time}")
+        
+        # Погода: 7 дней до, 3 дня после
+        try:
+            wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
+            if not wdf.empty:
+                event_weather[event_id] = wdf
+                logger.info(f"   🌡️ Погода: {len(wdf)} дней")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Ошибка погоды: {e}")
+        
+        # Ионосфера: TEC, ROTI
+        try:
+            iono_data = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
+            if iono_data['tec'] is not None and not iono_data['tec'].empty:
+                event_iono[event_id] = iono_data
+                logger.info(f"   🛰️ Ионосфера: TEC {len(iono_data['tec'])} записей")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Ошибка ионосферы: {e}")
+        
+        # Космическая погода: Kp, Dst, F10.7 за тот же период
+        try:
+            start = event_time - timedelta(days=7)
+            end = event_time + timedelta(days=3)
+            space_data = space.fetch_all_for_period(start, end)
+            if any(not df.empty for df in space_data.values()):
+                event_space[event_id] = space_data
+                logger.info(f"   ☀️ Космическая погода: загружена")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Ошибка космической погоды: {e}")
+
+# Сохраним собранные данные в кэш или в файл для последующего анализа
+# (опционально: сохранить в JSON для отчетов)
+    
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ
     # ═══════════════════════════════════════════════════════════════
