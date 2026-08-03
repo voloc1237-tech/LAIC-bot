@@ -132,6 +132,85 @@ class USGSCollector:
         
         logger.info(f"✅ USGS: получено {len(df)} событий")
         return df.sort_values('time').reset_index(drop=True)
+
+    # Добавьте в класс USGSCollector:
+
+    def fetch_global(self, start_time, end_time, min_magnitude=4.5):
+        """
+        Собирает ВСЕ землетрясения по всему миру за период.
+        Без ограничений по широте/долготе.
+        """
+        params = {
+            'format': 'geojson',
+            'starttime': start_time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'endtime': end_time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'minmagnitude': min_magnitude,
+            'orderby': 'time-asc',
+            'limit': 20000
+        }
+    
+        cache_key = self._make_cache_key(params)
+    
+        # Кэш
+        if self.cache_enabled:
+            cached = load_cache(cache_key, self.cache_max_age)
+            if cached is not None:
+                logger.info(f"💾 КЭШ: глобальные данные ({len(cached)} событий)")
+                return pd.DataFrame(cached)
+    
+        logger.info(f"🌍 Глобальный USGS запрос: {start_time.date()} — {end_time.date()}, M≥{min_magnitude}")
+    
+        try:
+            response = self.session.get(self.BASE_URL, params=params, timeout=60)
+            response.raise_for_status()
+        except Exception as e:
+            logger.error(f"❌ Ошибка USGS: {e}")
+            cached = load_cache(cache_key, max_age_hours=168)
+            if cached is not None:
+                logger.warning("⚠️ Использован просроченный кэш")
+                return pd.DataFrame(cached)
+            return pd.DataFrame()
+    
+        data = response.json()
+        features = data.get('features', [])
+        if not features:
+            return pd.DataFrame()
+    
+        # Преобразуем в записи (как в существующем fetch)
+        records = []
+        for f in features:
+            props = f['properties']
+            coords = f['geometry']['coordinates']
+            records.append({
+                'id': f['id'],
+                'time': props['time'],
+                'latitude': coords[1],
+                'longitude': coords[0],
+                'depth_km': coords[2],
+                'magnitude': props['mag'],
+                'mag_type': props.get('magType', 'unknown'),
+                'place': props.get('place', 'Unknown'),
+                'status': props.get('status', ''),
+                'tsunami': bool(props.get('tsunami', 0)),
+                'alert': props.get('alert'),
+                'felt': props.get('felt'),
+                'cdi': props.get('cdi'),
+                'mmi': props.get('mmi'),
+                'significance': props.get('sig', 0),
+                'nst': props.get('nst'),
+                'dmin': props.get('dmin'),
+                'rms': props.get('rms'),
+                'gap': props.get('gap'),
+                'url': props.get('url', '')
+            })
+    
+        if self.cache_enabled:
+            save_cache(cache_key, records)
+    
+        df = pd.DataFrame(records)
+        df['time'] = pd.to_datetime(df['time'], unit='ms', utc=True)
+        logger.info(f"✅ USGS: получено {len(df)} глобальных событий")
+        return df.sort_values('time').reset_index(drop=True)
     
     def fetch_for_region(self, region_config, days_back=30):
         """Сбор данных для конкретного региона."""
@@ -147,11 +226,10 @@ class USGSCollector:
             max_lon=region_config.get('max_lon')
         )
 
-
-def collect_all_regions(settings):
+def collect_all_regions(settings, global_mode=True):
     """
-    Собирает данные для ВСЕХ регионов из настроек.
-    Возвращает словарь {region_key: DataFrame}
+    global_mode=True: собирает события по всему миру (без регионов)
+    global_mode=False: старый режим по регионам из settings
     """
     collector = USGSCollector(
         cache_enabled=settings.get('cache', {}).get('enabled', True),
@@ -159,25 +237,36 @@ def collect_all_regions(settings):
     )
     
     results = {}
-    total_events = 0
     
-    for key, config in settings['regions'].items():
-        logger.info(f"\n📍 {config['name']}")
-        
-        df = collector.fetch_for_region(
-            config,
-            days_back=settings['analysis']['history_days']
-        )
-        
+    if global_mode:
+        # Глобальный сбор
+        min_mag = settings.get('analysis', {}).get('global_min_magnitude', 4.5)
+        days_back = settings['analysis']['history_days']
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days_back)
+        df = collector.fetch_global(start, end, min_magnitude=min_mag)
         if not df.empty:
-            df['region_key'] = key
-            df['region_name'] = config['name']
-            total_events += len(df)
-        
-        results[key] = df
+            # Добавляем искусственный регион 'global'
+            df['region_key'] = 'global'
+            df['region_name'] = '🌍 Global'
+            results['global'] = df
+        else:
+            results['global'] = pd.DataFrame()
+    else:
+        # Старый региональный режим
+        for key, config in settings['regions'].items():
+            df = collector.fetch_for_region(
+                config,
+                days_back=settings['analysis']['history_days']
+            )
+            if not df.empty:
+                df['region_key'] = key
+                df['region_name'] = config['name']
+            results[key] = df
     
+    total = sum(len(df) for df in results.values())
     logger.info(f"\n{'='*50}")
-    logger.info(f"📊 ИТОГО: {total_events} событий по {len(results)} регионам")
-    
+    logger.info(f"📊 ИТОГО: {total} событий по {len(results)} регионам")
     return results
+
   
