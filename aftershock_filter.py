@@ -5,7 +5,11 @@ aftershock_filter.py — фильтрация афтершоков для LAIC-�
 """
 
 import pandas as pd
+import logging
 from datetime import timedelta
+
+# Настройка логгера
+logger = logging.getLogger(__name__)
 
 
 def filter_aftershocks(df, time_window_days=7, distance_km=50, mag_threshold=0.5):
