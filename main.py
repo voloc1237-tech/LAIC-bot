@@ -338,7 +338,8 @@ def main():
             logger.info(f"ℹ️ ИИ-анализ пропущен (нужно ≥10 событий, собрано {len(events_for_ai)})")
     else:
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
-    
+
+
     # ═══════════════════════════════════════════════════════════════
     # 1e. ПРОГНОЗИРОВАНИЕ (LSTM)
     # ═══════════════════════════════════════════════════════════════
@@ -358,14 +359,18 @@ def main():
         predictor = EarthquakePredictor()
         
         # Подготавливаем данные для обучения
-        # Нужны: магнитуда, энергия, Kp, температура
         training_data = []
         for _, row in all_events.iterrows():
+            mag = row.get('magnitude', 0)
+            energy = 10**(1.5 * mag + 4.8) / 4.184e12
+            kp_mean = row.get('kp_mean', 0)
+            temp_mean = row.get('temp_mean', 0)
+            
             training_data.append({
-                'magnitude': row.get('magnitude', 0),
-                'energy': 10**(1.5 * row.get('magnitude', 0) + 4.8) / 4.184e12,
-                'kp_mean': row.get('kp_mean', 0),
-                'temp_mean': row.get('temp_mean', 0)
+                'magnitude': mag,
+                'energy': energy,
+                'kp_mean': kp_mean,
+                'temp_mean': temp_mean
             })
         
         df_train = pd.DataFrame(training_data)
@@ -380,17 +385,49 @@ def main():
                 logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
                 logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
                 
-                # Добавляем прогноз в отчёт
-                if TG_AVAILABLE and chat_id:
-                    forecast_msg = (
-                        f"🔮 <b>ПРОГНОЗ НА БЛИЖАЙШИЕ ДНИ</b>\n"
-                        f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
-                        f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
-                        f"{'⚠️ Повышенное внимание!' if prob > 0.5 else '✅ Ситуация стабильна'}"
-                    )
-                    send_photo(chat_id, None, forecast_msg)  # или send_message
+                # Формируем сообщение для Telegram
+                if prob > 0.5:
+                    status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
+                elif prob > 0.3:
+                    status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
+                else:
+                    status = "✅ Ситуация стабильна. Риск низкий."
+                
+                forecast_msg = (
+                    f"🔮 <b>ПРОГНОЗ НА БЛИЖАЙШИЕ ДНИ</b>\n"
+                    f"{'─' * 30}\n"
+                    f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
+                    f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
+                    f"Количество событий в обучении: <b>{len(df_train)}</b>\n"
+                    f"{'─' * 30}\n"
+                    f"{status}"
+                )
+                
+                # Отправляем прогноз в Telegram
+                try:
+                    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+                    chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+                    if token and chat_id:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        data = {
+                            'chat_id': chat_id,
+                            'text': forecast_msg,
+                            'parse_mode': 'HTML'
+                        }
+                        response = requests.post(url, data=data, timeout=30)
+                        if response.status_code == 200:
+                            logger.info("✅ Прогноз отправлен в Telegram")
+                        else:
+                            logger.error(f"❌ Ошибка отправки прогноза: {response.text}")
+                    else:
+                        logger.warning("⚠️ Токен Telegram не найден, прогноз не отправлен")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки прогноза: {e}")
         else:
             logger.info(f"ℹ️ Прогнозирование пропущено (нужно ≥20 событий, собрано {len(df_train)})")
+    else:
+        logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")    
+    
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
