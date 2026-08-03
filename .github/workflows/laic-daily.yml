@@ -19,24 +19,10 @@ jobs:
           pip install -r requirements.txt
           pip install earthengine-api google-auth
 
-      - name: Setup Earth Engine
-        env:
-          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
-        run: |
-          # Декодируем base64 в JSON, одновременно удаляя все переносы и лишние пробелы
-          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d | jq -c . > /tmp/ee-key.json
-          # Проверяем, что получился однострочный JSON (для отладки)
-          echo "=== Первые 100 символов ключа ==="
-          head -c 100 /tmp/ee-key.json
-          echo ""
-          echo "=== Длина файла ==="
-          wc -c /tmp/ee-key.json
-          echo "✅ EE ключ готов"
-
       - name: Run LAIC Analysis
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
+          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
         run: python main.py
