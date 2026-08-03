@@ -1,10 +1,14 @@
+# Новые зависимости
+tec>=0.1.0              # для парсинга IONEX
+tensorflow>=2.15.0      # для LSTM (прогнозирование)
+scikit-learn>=1.3.0     # уже есть
+joblib>=1.3.0           # для сохранения моделей
 quakeion>=0.1.0
 # Новые
 openmeteo-requests>=1.0.0
 retry-requests>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0
-scikit-learn>=1.2.0     # для ИИ позже
 matplotlib
 folium
 plotly
