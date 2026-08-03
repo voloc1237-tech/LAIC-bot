@@ -10,7 +10,7 @@ import sys
 import logging
 import pandas as pd 
 from datetime import datetime, timezone, timedelta
-
+from aftershock_filter import filter_aftershocks
 # Логи в stdout
 logging.basicConfig(
     level=logging.INFO,
@@ -129,29 +129,58 @@ def main():
     logger.info(f"\n📊 Всего событий: {total}")
 
 
-    from aftershock_filter import filter_aftershocks
+    
+    # ═══════════════════════════════════════════════════════════════
+    # 1a. ФИЛЬТРАЦИЯ АФТЕРШОКОВ
+    # ═══════════════════════════════════════════════════════════════
+    logger.info("\n" + "=" * 70)
+    logger.info("🔍 ЭТАП 1a: Фильтрация афтершоков")
+    logger.info("=" * 70)
 
-    # Фильтруем афтершоки для каждого региона
     data_filtered = {}
+    aftershock_counts = {}
+
     for region_name, df in data.items():
         if df.empty:
             data_filtered[region_name] = df
+            aftershock_counts[region_name] = 0
         else:
             df_filtered, df_aftershocks = filter_aftershocks(
                 df,
-                time_window_days=7,
-                distance_km=50,
-                mag_threshold=0.5
+                time_window_days=7,      # можно сделать настраиваемым
+                distance_km=50,          # можно сделать настраиваемым
+                mag_threshold=0.5        # можно сделать настраиваемым
             )
             data_filtered[region_name] = df_filtered
-            # Сохраняем афтершоки отдельно (можно логировать или отправлять в отчёт)
-            if not df_aftershocks.empty:
-                logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)}")
-                # Можно добавить в отчёт информацию об афтершоках
-                # aftershock_report[region_name] = df_aftershocks
+            aftershock_counts[region_name] = len(df_aftershocks)
+            logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)} из {len(df)} событий")
 
-    # Затем используем data_filtered вместо data для анализа
+    # Заменяем исходные данные на отфильтрованные
     data = data_filtered
+
+    total_filtered = sum(len(df) for df in data.values())
+    logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
+        # Фильтруем афтершоки для каждого региона
+        data_filtered = {}
+        for region_name, df in data.items():
+            if df.empty:
+                data_filtered[region_name] = df
+            else:
+                df_filtered, df_aftershocks = filter_aftershocks(
+                    df,
+                    time_window_days=7,
+                    distance_km=50,
+                    mag_threshold=0.5
+                )
+                data_filtered[region_name] = df_filtered
+                # Сохраняем афтершоки отдельно (можно логировать или отправлять в отчёт)
+                if not df_aftershocks.empty:
+                    logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)}")
+                    # Можно добавить в отчёт информацию об афтершоках
+                    # aftershock_report[region_name] = df_aftershocks
+
+        # Затем используем data_filtered вместо data для анализа
+        data = data_filtered
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
     # ═══════════════════════════════════════════════════════════════
