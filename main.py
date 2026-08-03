@@ -130,17 +130,25 @@ def main():
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
 
+
     # ═══════════════════════════════════════════════════════════════
     # 1a. ФИЛЬТРАЦИЯ АФТЕРШОКОВ
     # ═══════════════════════════════════════════════════════════════
     logger.info("\n" + "=" * 70)
     logger.info("🔍 ЭТАП 1a: Фильтрация афтершоков")
     logger.info("=" * 70)
-
+    
     data_filtered = {}
     aftershock_counts = {}
-
+    
     for region_name, df in data.items():
+        # Убедимся, что df — это DataFrame
+        if not isinstance(df, pd.DataFrame):
+            logger.warning(f"⚠️ {region_name}: не DataFrame, пропускаем")
+            data_filtered[region_name] = pd.DataFrame()
+            aftershock_counts[region_name] = 0
+            continue
+        
         if df.empty:
             data_filtered[region_name] = df
             aftershock_counts[region_name] = 0
@@ -154,13 +162,13 @@ def main():
             data_filtered[region_name] = df_filtered
             aftershock_counts[region_name] = len(df_aftershocks)
             logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)} из {len(df)} событий")
-
+    
     # Заменяем исходные данные на отфильтрованные
     data = data_filtered
-
-    total_filtered = sum(len(df) for df in data.values())
+    
+    total_filtered = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
     logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
-
+    
     
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
