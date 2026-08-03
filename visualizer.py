@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+visualizer.py — визуализация данных LAIC
+"""
+
 import os
 import io
 import tempfile
@@ -36,7 +42,7 @@ def _get_depth_column(df):
     for col in ['depth', 'depth_km', 'Depth', 'd']:
         if col in df.columns:
             return col
-    return None  # глубина не обязательна
+    return None
 
 
 def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
@@ -45,14 +51,13 @@ def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
         return None
 
     mag_col = _get_mag_column(df)
-    # Предполагаем, что колонка времени называется 'time'
     if 'time' not in df.columns:
         logger.error("Колонка 'time' не найдена в данных")
         return None
 
     df_sorted = df.sort_values('time')
 
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(10, 6))
     plt.plot(df_sorted['time'], df_sorted[mag_col], 'o-', color='royalblue', markersize=4, linewidth=1.5)
     plt.title(f'{region_name} – временной ряд магнитуд', fontsize=12)
     plt.xlabel('Дата', fontsize=10)
@@ -62,7 +67,7 @@ def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
     plt.tight_layout()
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100)
+    plt.savefig(buf, format='png', dpi=120)
     buf.seek(0)
     plt.close()
     return buf.getvalue()
@@ -158,26 +163,53 @@ def create_interactive_report(
     m.get_root().html.add_child(folium.Element(legend_html))
 
     # ========== 2. ГРАФИК (Plotly) ==========
+    max_mag = df[mag_col].max()
     trace = go.Scatter(
         x=df_sorted['time'],
         y=df_sorted[mag_col],
         mode='lines+markers',
         marker=dict(size=6, color='red'),
+        line=dict(color='blue', width=2),
         name='Магнитуда'
     )
+
+    # Добавляем горизонтальные линии для порогов
+    shapes = []
+    for threshold in [4, 5, 6]:
+        shapes.append(dict(
+            type='line',
+            x0=df_sorted['time'].min(),
+            x1=df_sorted['time'].max(),
+            y0=threshold,
+            y1=threshold,
+            line=dict(dash='dash', color='gray', width=1)
+        ))
+
+    annotations = [
+        dict(
+            x=df_sorted['time'].max(),
+            y=max_mag,
+            text=f'Макс. {max_mag:.1f}',
+            showarrow=True,
+            arrowhead=1,
+            bgcolor='white'
+        )
+    ]
+
     layout = go.Layout(
         title=f'{region_name} – динамика магнитуд за последние {period_days} дней',
         xaxis_title='Дата',
         yaxis_title='Магнитуда (M)',
         hovermode='closest',
         template='plotly_white',
-        height=500,                 # ← увеличиваем высоту
-        width=900,                  # ← ширина (можно адаптивно)
-        font=dict(size=14),         # ← более крупный шрифт
-        margin=dict(l=60, r=30, t=60, b=80)  # ← отступы для подписей
+        height=500,
+        width=900,
+        font=dict(size=14),
+        margin=dict(l=60, r=30, t=60, b=80),
+        shapes=shapes,
+        annotations=annotations
     )
-    
-    
+
     fig = go.Figure(data=[trace], layout=layout)
     plotly_div = plot(fig, output_type='div', include_plotlyjs='cdn')
 
@@ -186,7 +218,6 @@ def create_interactive_report(
     table_columns = ['time', 'place', mag_col]
     if depth_col is not None:
         table_columns.append(depth_col)
-    # Можно добавить ещё latitude/longitude, но в таблице они обычно не нужны
 
     table_data = df_sorted[table_columns].copy()
     # Переименовываем для красоты
@@ -237,8 +268,8 @@ def create_interactive_report(
     '''
 
     # ========== 6. СТАТИСТИКА ==========
-    max_mag = df[mag_col].max()
-    mean_mag = df[mag_col].mean()
+    max_mag_val = df[mag_col].max()
+    mean_mag_val = df[mag_col].mean()
     lst_str = ''
     if lst_data and lst_data.get('lst_celsius') is not None:
         lst_str = f'<p><strong>Средняя температура поверхности (LST):</strong> {lst_data["lst_celsius"]:.2f}°C</p>'
@@ -274,8 +305,8 @@ def create_interactive_report(
             <div class="stats">
                 <p><strong>Период:</strong> {df['time'].min()} — {df['time'].max()}</p>
                 <p><strong>Количество событий:</strong> {len(df)}</p>
-                <p><strong>Максимальная магнитуда:</strong> {max_mag:.1f}</p>
-                <p><strong>Средняя магнитуда:</strong> {mean_mag:.2f}</p>
+                <p><strong>Максимальная магнитуда:</strong> {max_mag_val:.1f}</p>
+                <p><strong>Средняя магнитуда:</strong> {mean_mag_val:.2f}</p>
                 {lst_str}
                 <p><strong>Ссылки:</strong> <a href="{usgs_url}" target="_blank">USGS</a> | <a href="{google_maps_url}" target="_blank">Google Maps</a></p>
             </div>
@@ -326,49 +357,12 @@ def create_interactive_report(
     </body>
     </html>
     """
-    def create_anomaly_plot(df_anomalies, region_name):
-        """
-        Создаёт график с выделением аномалий.
-        """
-        import matplotlib.pyplot as plt
-        import io
-    
-        if df_anomalies.empty:
-            return None
-    
-        fig, ax = plt.subplots(figsize=(10, 5))
-    
-        # Нормальные события (зелёные)
-        normal = df_anomalies[~df_anomalies['is_anomaly']]
-        anomalies = df_anomalies[df_anomalies['is_anomaly']]
-    
-        ax.scatter(normal.index, normal['magnitude'], 
-                   color='green', label='Норма', alpha=0.6, s=30)
-    
-        ax.scatter(anomalies.index, anomalies['magnitude'],
-                   color='red', label='Аномалия', s=50, marker='X', edgecolor='black')
-    
-        ax.axhline(y=5.0, color='orange', linestyle='--', alpha=0.5, label='Порог M=5.0')
-        ax.axhline(y=6.0, color='red', linestyle='--', alpha=0.5, label='Порог M=6.0')
-    
-        ax.set_xlabel('Событие (#)')
-        ax.set_ylabel('Магнитуда (M)')
-        ax.set_title(f'Обнаружение аномалий — {region_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-    
-        plt.tight_layout()
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=120)
-        buf.seek(0)
-        plt.close()
-        return buf.getvalue()
-    
-     # Минификация (если доступна)
-     if HAS_HTMLMIN:
+
+    # Минификация (если доступна)
+    if HAS_HTMLMIN:
         try:
             html_minified = minify(html_template, remove_empty_space=True, remove_comments=True)
-        except:
+        except Exception:
             html_minified = html_template
     else:
         html_minified = html_template
@@ -376,3 +370,39 @@ def create_interactive_report(
     with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
         f.write(html_minified)
         return f.name
+
+
+def create_anomaly_plot(df_anomalies, region_name):
+    """
+    Создаёт график с выделением аномалий.
+    """
+    if df_anomalies.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    # Нормальные события (зелёные)
+    normal = df_anomalies[~df_anomalies['is_anomaly']]
+    anomalies = df_anomalies[df_anomalies['is_anomaly']]
+
+    ax.scatter(normal.index, normal['magnitude'],
+               color='green', label='Норма', alpha=0.6, s=30)
+
+    ax.scatter(anomalies.index, anomalies['magnitude'],
+               color='red', label='Аномалия', s=50, marker='X', edgecolor='black')
+
+    ax.axhline(y=5.0, color='orange', linestyle='--', alpha=0.5, label='Порог M=5.0')
+    ax.axhline(y=6.0, color='red', linestyle='--', alpha=0.5, label='Порог M=6.0')
+
+    ax.set_xlabel('Событие (#)')
+    ax.set_ylabel('Магнитуда (M)')
+    ax.set_title(f'Обнаружение аномалий — {region_name}')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=120)
+    buf.seek(0)
+    plt.close()
+    return buf.getvalue()
