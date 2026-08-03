@@ -1,31 +1,54 @@
 import os
 import io
 import tempfile
-import json
-import base64
 import pandas as pd
 import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
 import plotly.graph_objs as go
 from plotly.offline import plot
-from htmlmin import minify  # если не установлен, закомментируйте строку с минификацией
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Попытка импортировать htmlmin (опционально)
+try:
+    from htmlmin import minify
+    HAS_HTMLMIN = True
+except ImportError:
+    HAS_HTMLMIN = False
+
+
+def _get_mag_column(df):
+    """Возвращает имя колонки с магнитудой (mag, magnitude, M и т.п.)"""
+    for col in ['mag', 'magnitude', 'M', 'Magnitude']:
+        if col in df.columns:
+            return col
+    # Если ничего не найдено – используем первую числовую колонку (опасно, но лучше чем ничего)
+    numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+    if len(numeric_cols) > 0:
+        logger.warning(f"⚠️ Колонка магнитуды не найдена. Использую '{numeric_cols[0]}' как магнитуду.")
+        return numeric_cols[0]
+    raise KeyError("Не найдена колонка с магнитудой в данных.")
+
 
 def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
-    """
-    Создаёт временной ряд магнитуд (PNG) для быстрого просмотра в Telegram.
-    """
+    """Создаёт временной ряд магнитуд (PNG)."""
     if df.empty:
         return None
-    df_sorted = df.sort_values('time')
+
+    mag_col = _get_mag_column(df)
+    df_sorted = df.sort_values('time')  # предполагаем, что колонка 'time' есть
+
     plt.figure(figsize=(8, 4))
-    plt.plot(df_sorted['time'], df_sorted['mag'], 'o-', color='royalblue', markersize=4, linewidth=1.5)
+    plt.plot(df_sorted['time'], df_sorted[mag_col], 'o-', color='royalblue', markersize=4, linewidth=1.5)
     plt.title(f'{region_name} – временной ряд магнитуд', fontsize=12)
     plt.xlabel('Дата', fontsize=10)
     plt.ylabel('Магнитуда (M)', fontsize=10)
     plt.grid(True, alpha=0.3)
     plt.xticks(rotation=20, fontsize=8)
     plt.tight_layout()
+
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100)
     buf.seek(0)
@@ -40,19 +63,12 @@ def create_interactive_report(
     period_days: int = 30
 ) -> str:
     """
-    Создаёт самодостаточный HTML-отчёт с:
-    - интерактивной картой (Folium) с маркерами, тепловой картой и легендой,
-    - графиком Plotly,
-    - таблицей DataTables (сортировка, фильтрация, поиск),
-    - ссылками на USGS и Google Maps,
-    - кнопкой экспорта CSV,
-    - минификацией HTML (если установлен htmlmin).
-    Возвращает путь к временному HTML-файлу.
+    Создаёт самодостаточный HTML-отчёт с картой, графиком и таблицей.
     """
     if df.empty:
         return None
 
-    # Подготовка данных
+    mag_col = _get_mag_column(df)
     df_sorted = df.sort_values('time')
     center_lat = df['latitude'].mean()
     center_lon = df['longitude'].mean()
@@ -64,10 +80,8 @@ def create_interactive_report(
         tiles='OpenStreetMap'
     )
 
-    # Добавляем маркеры
     for _, row in df.iterrows():
-        mag = row['mag']
-        # Цвет в зависимости от магнитуды
+        mag = row[mag_col]
         if mag >= 6:
             color = 'red'
         elif mag >= 5:
@@ -76,7 +90,7 @@ def create_interactive_report(
             color = 'yellow'
         else:
             color = 'green'
-        radius = mag ** 2  # чтобы сильные выделялись
+        radius = mag ** 2
         popup = f"""
         <b>{row['place']}</b><br>
         Магнитуда: {mag}<br>
@@ -94,21 +108,19 @@ def create_interactive_report(
             weight=1
         ).add_to(m)
 
-    # Тепловой слой (плотность землетрясений)
-    heat_data = [[row['latitude'], row['longitude'], row['mag']] for _, row in df.iterrows()]
+    # Тепловой слой (плотность)
+    heat_data = [[row['latitude'], row['longitude'], row[mag_col]] for _, row in df.iterrows()]
     HeatMap(heat_data, radius=15, blur=10, max_zoom=10).add_to(m)
 
-    # Если есть LST-данные – добавляем слой с температурой (можно как тепловую карту или маркер)
+    # LST-маркер (если есть)
     if lst_data and lst_data.get('lst_celsius') is not None:
-        # Добавляем маркер с температурой в центре
         folium.Marker(
             location=[center_lat, center_lon],
             popup=f"Средняя LST: {lst_data['lst_celsius']}°C",
             icon=folium.Icon(color='purple', icon='thermometer', prefix='fa')
         ).add_to(m)
-        # Можно также добавить слой с растром, но это сложнее – опустим
 
-    # Легенда (используем CSS-блок)
+    # Легенда
     legend_html = '''
     <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3); font-size: 12px;">
         <b>Магнитуда</b><br>
@@ -123,7 +135,7 @@ def create_interactive_report(
     # ========== 2. ГРАФИК (Plotly) ==========
     trace = go.Scatter(
         x=df_sorted['time'],
-        y=df_sorted['mag'],
+        y=df_sorted[mag_col],
         mode='lines+markers',
         marker=dict(size=6, color='red'),
         name='Магнитуда'
@@ -138,18 +150,20 @@ def create_interactive_report(
     fig = go.Figure(data=[trace], layout=layout)
     plotly_div = plot(fig, output_type='div', include_plotlyjs='cdn')
 
-    # ========== 3. ТАБЛИЦА (HTML + DataTables) ==========
-    # Подготовка данных для таблицы (только нужные колонки)
-    table_data = df_sorted[['time', 'place', 'mag', 'depth']].copy()
-    # Преобразуем в HTML-таблицу с классом для DataTables
-    table_html = table_data.to_html(classes='table table-striped table-bordered', index=False, table_id='quakes-table')
+    # ========== 3. ТАБЛИЦА (DataTables) ==========
+    table_data = df_sorted[['time', 'place', mag_col, 'depth']].copy()
+    table_data.rename(columns={mag_col: 'mag'}, inplace=True)  # для единообразия
+    table_html = table_data.to_html(
+        classes='table table-striped table-bordered',
+        index=False,
+        table_id='quakes-table'
+    )
 
-    # ========== 4. ССЫЛКИ НА ВНЕШНИЕ ИСТОЧНИКИ ==========
-    # Ссылка на USGS (поиск по региону)
+    # ========== 4. ССЫЛКИ ==========
     usgs_url = f"https://earthquake.usgs.gov/earthquakes/search/#%7B%22starttime%22%3A%22{df['time'].min()}%22%2C%22endtime%22%3A%22{df['time'].max()}%22%2C%22minmagnitude%22%3A0%2C%22region%22%3A%22{region_name}%22%7D"
     google_maps_url = f"https://www.google.com/maps/@{center_lat},{center_lon},5z"
 
-    # ========== 5. КНОПКИ ЭКСПОРТА (CSV и печать) ==========
+    # ========== 5. КНОПКИ ЭКСПОРТА ==========
     export_script = '''
     <script>
     function exportCSV() {
@@ -192,7 +206,7 @@ def create_interactive_report(
         <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
         <!-- DataTables -->
         <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
-        <!-- Font Awesome для иконок -->
+        <!-- Font Awesome -->
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
         <style>
             body {{ padding: 20px; background: #f8f9fa; }}
@@ -211,8 +225,8 @@ def create_interactive_report(
             <div class="stats">
                 <p><strong>Период:</strong> {df['time'].min()} — {df['time'].max()}</p>
                 <p><strong>Количество событий:</strong> {len(df)}</p>
-                <p><strong>Максимальная магнитуда:</strong> {df['mag'].max():.1f}</p>
-                <p><strong>Средняя магнитуда:</strong> {df['mag'].mean():.2f}</p>
+                <p><strong>Максимальная магнитуда:</strong> {df[mag_col].max():.1f}</p>
+                <p><strong>Средняя магнитуда:</strong> {df[mag_col].mean():.2f}</p>
                 {f'<p><strong>Средняя температура поверхности (LST):</strong> {lst_data["lst_celsius"]:.2f}°C</p>' if lst_data and lst_data.get('lst_celsius') else ''}
                 <p><strong>Ссылки:</strong> <a href="{usgs_url}" target="_blank">USGS</a> | <a href="{google_maps_url}" target="_blank">Google Maps</a></p>
             </div>
@@ -248,7 +262,7 @@ def create_interactive_report(
             </div>
         </div>
 
-        <!-- jQuery, Bootstrap, DataTables -->
+        <!-- jQuery, DataTables -->
         <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
         <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
         <script>
@@ -264,13 +278,15 @@ def create_interactive_report(
     </html>
     """
 
-    # Минификация HTML (если доступна)
-    try:
-        html_minified = minify(html_template, remove_empty_space=True, remove_comments=True)
-    except:
+    # Минификация (если доступна)
+    if HAS_HTMLMIN:
+        try:
+            html_minified = minify(html_template, remove_empty_space=True, remove_comments=True)
+        except:
+            html_minified = html_template
+    else:
         html_minified = html_template
 
-    # Сохраняем во временный файл
     with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
         f.write(html_minified)
         return f.name
