@@ -326,9 +326,46 @@ def create_interactive_report(
     </body>
     </html>
     """
-
-    # Минификация (если доступна)
-    if HAS_HTMLMIN:
+    def create_anomaly_plot(df_anomalies, region_name):
+        """
+        Создаёт график с выделением аномалий.
+        """
+        import matplotlib.pyplot as plt
+        import io
+    
+        if df_anomalies.empty:
+            return None
+    
+        fig, ax = plt.subplots(figsize=(10, 5))
+    
+        # Нормальные события (зелёные)
+        normal = df_anomalies[~df_anomalies['is_anomaly']]
+        anomalies = df_anomalies[df_anomalies['is_anomaly']]
+    
+        ax.scatter(normal.index, normal['magnitude'], 
+                   color='green', label='Норма', alpha=0.6, s=30)
+    
+        ax.scatter(anomalies.index, anomalies['magnitude'],
+                   color='red', label='Аномалия', s=50, marker='X', edgecolor='black')
+    
+        ax.axhline(y=5.0, color='orange', linestyle='--', alpha=0.5, label='Порог M=5.0')
+        ax.axhline(y=6.0, color='red', linestyle='--', alpha=0.5, label='Порог M=6.0')
+    
+        ax.set_xlabel('Событие (#)')
+        ax.set_ylabel('Магнитуда (M)')
+        ax.set_title(f'Обнаружение аномалий — {region_name}')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=120)
+        buf.seek(0)
+        plt.close()
+        return buf.getvalue()
+    
+     # Минификация (если доступна)
+     if HAS_HTMLMIN:
         try:
             html_minified = minify(html_template, remove_empty_space=True, remove_comments=True)
         except:
