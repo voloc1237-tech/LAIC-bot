@@ -128,6 +128,30 @@ def main():
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
 
+
+    from aftershock_filter import filter_aftershocks
+
+    # Фильтруем афтершоки для каждого региона
+    data_filtered = {}
+    for region_name, df in data.items():
+        if df.empty:
+            data_filtered[region_name] = df
+        else:
+            df_filtered, df_aftershocks = filter_aftershocks(
+                df,
+                time_window_days=7,
+                distance_km=50,
+                mag_threshold=0.5
+            )
+            data_filtered[region_name] = df_filtered
+            # Сохраняем афтершоки отдельно (можно логировать или отправлять в отчёт)
+            if not df_aftershocks.empty:
+                logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)}")
+                # Можно добавить в отчёт информацию об афтершоках
+                # aftershock_report[region_name] = df_aftershocks
+
+    # Затем используем data_filtered вместо data для анализа
+    data = data_filtered
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
     # ═══════════════════════════════════════════════════════════════
