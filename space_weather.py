@@ -3,9 +3,9 @@
 """
 space_weather.py — сбор данных космической погоды
 Источники:
-- Kp: GFZ Potsdam (основной, работает стабильно)
-- Dst: NOAA SWPC (JSON)
-- F10.7: LASP (университет Колорадо)
+- Kp: GFZ Potsdam (основной, стабильный)
+- Dst: WDC Kyoto (официальный архив)
+- F10.7: GFZ Potsdam (вместе с Kp)
 """
 
 import pandas as pd
@@ -13,6 +13,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 import logging
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class SpaceWeatherCollector:
         self.cache[key] = (data, time.time())
     
     # ═══════════════════════════════════════════════════════
-    # 1. Kp-индекс (GFZ Potsdam — основной, стабильный)
+    # 1. Kp-индекс (GFZ Potsdam)
     # ═══════════════════════════════════════════════════════
     
     def fetch_kp(self, start_date, end_date):
@@ -58,7 +59,7 @@ class SpaceWeatherCollector:
                 if not line.strip() or line.startswith('#'):
                     continue
                 parts = line.split()
-                if len(parts) < 14:  # минимум для Kp данных
+                if len(parts) < 14:
                     continue
                 try:
                     year = int(parts[0])
@@ -87,11 +88,14 @@ class SpaceWeatherCollector:
         return pd.DataFrame()
     
     # ═══════════════════════════════════════════════════════
-    # 2. Dst-индекс (NOAA SWPC)
+    # 2. Dst-индекс (WDC Kyoto — официальный архив)
     # ═══════════════════════════════════════════════════════
     
     def fetch_dst(self, start_date, end_date):
-        """Получить Dst-индекс из NOAA SWPC."""
+        """
+        Получить Dst-индекс из официального архива WDC Kyoto.
+        Формат: https://wdc.kugi.kyoto-u.ac.jp/dst_final/YYYY/YYYYMM.dst
+        """
         cache_key = f'dst_{start_date}_{end_date}'
         cached = self._get_cache(cache_key)
         if cached is not None:
@@ -99,40 +103,78 @@ class SpaceWeatherCollector:
             return cached
         
         try:
-            url = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
+            # Формируем URL для нужного года и месяца
+            year = start_date.strftime('%Y')
+            month = start_date.strftime('%m')
+            url = f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month}.dst"
+            
+            logger.debug(f"Запрос Dst: {url}")
             resp = self.session.get(url, timeout=30)
             resp.raise_for_status()
-            data = resp.json()
             
             records = []
-            for item in data[1:]:
+            for line in resp.text.splitlines():
+                if not line.strip() or line.startswith('#'):
+                    continue
+                # Формат: позиции 3-6 = год, 8-10 = день года, 12-13 = час
+                # Позиции 21-116 = 24 значения по 4 символа
                 try:
-                    dt = datetime.strptime(item[0], '%Y-%m-%d %H:%M:%S')
-                    if start_date <= dt <= end_date:
-                        dst_val = float(item[1]) if item[1] else None
+                    year_str = line[2:6].strip()
+                    day_of_year = int(line[7:10].strip())
+                    hour = int(line[11:13].strip())
+                    
+                    if not year_str:
+                        continue
+                    year = int(year_str)
+                    
+                    # Парсим 24 часовых значения Dst (с 21 по 116 позицию)
+                    dst_values = []
+                    for i in range(24):
+                        pos = 20 + i * 4
+                        val_str = line[pos:pos+4].strip()
+                        if val_str and val_str != '9999':
+                            dst_values.append(float(val_str))
+                        else:
+                            dst_values.append(None)
+                    
+                    # Добавляем каждое часовое значение как отдельную запись
+                    for i, dst_val in enumerate(dst_values):
                         if dst_val is not None:
-                            records.append({'time': dt, 'dst': dst_val})
-                except (ValueError, IndexError):
+                            dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1, hours=i)
+                            if start_date <= dt <= end_date:
+                                records.append({'time': dt, 'dst': dst_val})
+                
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Ошибка парсинга Dst строки: {e}")
                     continue
             
             df = pd.DataFrame(records)
             if not df.empty:
                 df.set_index('time', inplace=True)
                 self._set_cache(cache_key, df)
-                logger.info(f"🧲 Dst (NOAA): {len(df)} записей")
+                logger.info(f"🧲 Dst (Kyoto): {len(df)} записей")
                 return df
+                
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.warning(f"⚠️ Данные Dst за {year}-{month} не найдены (возможно, ещё нет архива)")
+            else:
+                logger.warning(f"⚠️ Ошибка Dst Kyoto: {e}")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка Dst NOAA: {e}")
+            logger.warning(f"⚠️ Ошибка Dst Kyoto: {e}")
         
         logger.warning("⚠️ Dst данные не получены")
         return pd.DataFrame()
     
     # ═══════════════════════════════════════════════════════
-    # 3. F10.7 (LASP — университет Колорадо)
+    # 3. F10.7 (GFZ Potsdam — вместе с Kp)
     # ═══════════════════════════════════════════════════════
     
     def fetch_f107(self, start_date, end_date):
-        """Получить ежедневный поток F10.7 из архива LASP."""
+        """
+        Получить ежедневный поток F10.7 из архива GFZ Potsdam.
+        Использует тот же файл, что и для Kp.
+        """
         cache_key = f'f107_{start_date}_{end_date}'
         cached = self._get_cache(cache_key)
         if cached is not None:
@@ -140,7 +182,7 @@ class SpaceWeatherCollector:
             return cached
         
         try:
-            url = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
+            url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
             resp = self.session.get(url, timeout=30)
             resp.raise_for_status()
             
@@ -149,14 +191,16 @@ class SpaceWeatherCollector:
                 if not line.strip() or line.startswith('#'):
                     continue
                 parts = line.split()
-                if len(parts) < 4:
+                if len(parts) < 13:
                     continue
                 try:
                     year = int(parts[0])
-                    day_of_year = int(parts[1])
-                    f107_val = float(parts[2]) if parts[2] else None
-                    if f107_val is not None:
-                        dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1)
+                    month = int(parts[1])
+                    day = int(parts[2])
+                    # Столбец 13 — это F10.7 (индекс 12 в списке)
+                    f107_val = float(parts[12]) if parts[12] else None
+                    if f107_val is not None and f107_val > 0:
+                        dt = datetime(year, month, day, tzinfo=timezone.utc)
                         if start_date <= dt <= end_date:
                             records.append({'time': dt, 'f107': f107_val})
                 except (ValueError, IndexError):
@@ -166,10 +210,10 @@ class SpaceWeatherCollector:
             if not df.empty:
                 df.set_index('time', inplace=True)
                 self._set_cache(cache_key, df)
-                logger.info(f"☀️ F10.7 (LASP): {len(df)} записей")
+                logger.info(f"☀️ F10.7 (GFZ): {len(df)} записей")
                 return df
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка F10.7 LASP: {e}")
+            logger.warning(f"⚠️ Ошибка F10.7 GFZ: {e}")
         
         logger.warning("⚠️ F10.7 данные не получены")
         return pd.DataFrame()
