@@ -13,6 +13,14 @@ import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
+import sys
+print("📦 PYTHON PATH:", sys.path)
+try:
+    import gnssanalysis
+     print(f"✅ gnssanalysis найден! Версия: {gnssanalysis.__version__}")
+except ImportError as e:
+    print(f"❌ gnssanalysis НЕ найден: {e}")
+     # Если тут ошибка - значит, проблема в окружении, а не в коде.
 
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
