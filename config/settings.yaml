@@ -29,11 +29,16 @@ regions:
 
 # === ПАРАМЕТРЫ АНАЛИЗА ===
 analysis:
-  history_days: 90
+  history_days: 60
   precursor_window_days: 7
   swarm_detection_hours: 72
   energy_window_days: 14
-
+  
+  aftershock:
+    enabled: true
+    time_window_days: 7
+    distance_km: 50
+    mag_threshold: 0.5
   # ===== ГЛОБАЛЬНЫЙ РЕЖИМ =====
   global_mode: true              # true – собираем весь мир, false – только регионы
   global_min_magnitude: 4.5      # минимальная магнитуда для глобального сбора
