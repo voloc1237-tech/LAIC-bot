@@ -265,14 +265,21 @@ class LAICAnalyzer:
             'swarm': {'is_swarm': swarm_detected, 'count': swarm_count}
         }
     
+    
     def analyze_all(self, data):
         """Анализирует все регионы."""
         results = []
         
         for region_name, df in data.items():
+            # Проверяем, что df — DataFrame
+            if not isinstance(df, pd.DataFrame):
+                logger.warning(f"⚠️ {region_name}: данные не являются DataFrame, пропускаем")
+                continue
+            
             config = self.settings.get('regions', {}).get(region_name, {})
             result = self.analyze_region(df, region_name, config)
             results.append(result)
         
         logger.info(f"✅ LAIC-анализ завершён: {len(results)} регионов")
         return results
+   
