@@ -14,15 +14,6 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
 
-import sys
-print("📦 PYTHON PATH:", sys.path)
-try:
-    import gnssanalysis
-    print(f"✅ gnssanalysis найден! Версия: {gnssanalysis.__version__}")
-except ImportError as e:
-    print(f"❌ gnssanalysis НЕ найден: {e}")
-    # Если тут ошибка - значит, проблема в окружении, а не в коде.
-
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
 # ═══════════════════════════════════════════════════════════════
@@ -37,23 +28,14 @@ logger = logging.getLogger('LAIC')
 # СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
 # ═══════════════════════════════════════════════════════════════
 def ensure_directories():
-    """Создаёт необходимые папки для работы бота."""
-    directories = [
-        "data",
-        "data/cache",
-        "data/ionex_cache",
-        "data/models",
-        "config"
-    ]
+    directories = ["data", "data/cache", "data/ionex_cache", "data/models", "config"]
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)
-        logger.debug(f"📁 Папка: {directory}")
 
-# Создаём папки
 ensure_directories()
 
 # ═══════════════════════════════════════════════════════════════
-# ИМПОРТЫ МОДУЛЕЙ (с проверкой наличия)
+# ИМПОРТЫ МОДУЛЕЙ
 # ═══════════════════════════════════════════════════════════════
 
 # GEE
@@ -70,9 +52,8 @@ try:
     VISUALIZER_AVAILABLE = True
 except ImportError:
     VISUALIZER_AVAILABLE = False
-    logger.warning("⚠️ Модуль визуализации не найден (visualizer.py)")
 
-# Телеграм (основной и дополнительные функции)
+# Телеграм
 try:
     from telegram_sender import send_sync, alert_sync, send_photo, send_document
     TG_AVAILABLE = True
@@ -80,36 +61,50 @@ except ImportError:
     TG_AVAILABLE = False
     logger.warning("⚠️ Модуль Telegram не найден")
 
-# Новые модули (погода, ионосфера, космическая погода)
+# Данные
 try:
     from weather_collector import WeatherCollector
     WEATHER_AVAILABLE = True
-except ImportError:
-    WEATHER_AVAILABLE = False
-    logger.warning("⚠️ WeatherCollector не доступен")
+except ImportError: WEATHER_AVAILABLE = False
 
 try:
     from ionosphere_collector import IonosphereCollector
     IONO_AVAILABLE = True
-except ImportError:
-    IONO_AVAILABLE = False
-    logger.warning("⚠️ IonosphereCollector не доступен")
+except ImportError: IONO_AVAILABLE = False
 
 try:
     from space_weather import SpaceWeatherCollector
     SPACE_AVAILABLE = True
-except ImportError:
-    SPACE_AVAILABLE = False
-    logger.warning("⚠️ SpaceWeatherCollector не доступен")
+except ImportError: SPACE_AVAILABLE = False
 
 
 def main():
     logger.info("=" * 70)
     logger.info("🚀 LAIC EARTHQUAKE MONITOR")
-    logger.info(f"⏰ {datetime.now(timezone.utc).isoformat()}")
+    
+    # ============================================================
+    # 🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: ОПРЕДЕЛЕНИЕ ДАТЫ ДО СБОРА ДАННЫХ
+    # ============================================================
+    
+    # 1. Читаем TEST_MODE из переменных окружения
+    test_mode_str = os.environ.get('TEST_MODE', 'false').lower()
+    TEST_MODE = (test_mode_str == 'true')
+    
+    current_time = datetime.now(timezone.utc)
+    
+    if TEST_MODE:
+        # Если режим теста - жестко ставим дату 2023-01-15 12:00 UTC
+        # Это гарантирует, что файлы IONEX существуют на серверах NASA
+        forced_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ АКТИВИРОВАН!")
+        logger.warning(f"📅 Дата принудительно изменена на: {forced_date.isoformat()}")
+        current_time = forced_date
+    else:
+        logger.info(f"⏰ Реальный режим: текущая дата {current_time.isoformat()}")
+
     logger.info("=" * 70)
 
-    # Проверка токенов Telegram
+    # Проверка токенов
     token = os.environ.get('TELEGRAM_BOT_TOKEN')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
     if not token or not chat_id:
@@ -117,9 +112,7 @@ def main():
         sys.exit(1)
     logger.info("✅ Токены Telegram найдены")
 
-    # ═══════════════════════════════════════════════════════════════
-    # ЗАГРУЗКА НАСТРОЕК
-    # ═══════════════════════════════════════════════════════════════
+    # Загрузка настроек
     import yaml
     try:
         with open('config/settings.yaml', 'r', encoding='utf-8') as f:
@@ -129,41 +122,36 @@ def main():
         sys.exit(1)
     logger.info(f"✅ Настройки загружены: {len(settings.get('regions', {}))} регионов")
 
-    # ═══════════════════════════════════════════════════════════════
-    # ПОДКЛЮЧЕНИЕ GOOGLE EARTH ENGINE
-    # ═══════════════════════════════════════════════════════════════
+    # Подключение GEE
     ee_initialized = False
     if GEE_AVAILABLE:
         try:
             ee_initialized = GEEInitializer.init()
-            if ee_initialized:
-                logger.info("✅ Earth Engine подключен!")
-            else:
-                logger.warning("⚠️ Earth Engine не инициализирован")
+            if ee_initialized: logger.info("✅ Earth Engine подключен!")
         except Exception as e:
             logger.warning(f"⚠️ Earth Engine ошибка: {e}")
-    else:
-        logger.info("ℹ️ Earth Engine не настроен")
 
-    # ═══════════════════════════════════════════════════════════════
-    # 1. СБОР ДАННЫХ USGS (глобально или по регионам)
-    # ═══════════════════════════════════════════════════════════════
+    # ============================================================
+    # ЭТАП 1: СБОР ДАННЫХ USGS
+    # Теперь мы передаем current_time (который может быть 2023 годом) в коллектор,
+    # если коллектор использует время для фильтрации. 
+    # Если collect_all_regions берет только "последние N дней", то дата не важна для запроса,
+    # но важна для последующих этапов (ионосфера).
+    # ============================================================
     logger.info("\n" + "=" * 70)
     logger.info("📥 ЭТАП 1: Сбор данных USGS")
     logger.info("=" * 70)
 
     from data_collector import collect_all_regions
-
-    # Определяем режим: глобальный или региональный
     global_mode = settings.get('analysis', {}).get('global_mode', True)
     data = collect_all_regions(settings, global_mode=global_mode)
 
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
 
-    # ═══════════════════════════════════════════════════════════════
-    # 1a. ФИЛЬТРАЦИЯ АФТЕРШОКОВ
-    # ═══════════════════════════════════════════════════════════════
+    # ============================================================
+    # ЭТАП 1a: ФИЛЬТРАЦИЯ АФТЕРШОКОВ
+    # ============================================================
     logger.info("\n" + "=" * 70)
     logger.info("🔍 ЭТАП 1a: Фильтрация афтершоков")
     logger.info("=" * 70)
@@ -173,7 +161,6 @@ def main():
     
     for region_name, df in data.items():
         if not isinstance(df, pd.DataFrame):
-            logger.warning(f"⚠️ {region_name}: не DataFrame, пропускаем")
             data_filtered[region_name] = pd.DataFrame()
             aftershock_counts[region_name] = 0
             continue
@@ -182,27 +169,19 @@ def main():
             data_filtered[region_name] = df
             aftershock_counts[region_name] = 0
         else:
-            df_filtered, df_aftershocks = filter_aftershocks(
-                df,
-                time_window_days=7,
-                distance_km=50,
-                mag_threshold=0.5
-            )
+            df_filtered, df_aftershocks = filter_aftershocks(df, time_window_days=7, distance_km=50, mag_threshold=0.5)
             data_filtered[region_name] = df_filtered
             aftershock_counts[region_name] = len(df_aftershocks)
             logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)} из {len(df)} событий")
     
     data = data_filtered
-    
     total_filtered = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
-    logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
+    logger.info(f"\n📊 После фильтрации: {total_filtered} событий")
 
-
-    
-
-    # ═══════════════════════════════════════════════════════════════
-    # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
-    # ═══════════════════════════════════════════════════════════════
+    # ============================================================
+    # ЭТАП 1b: СБОР СПУТНИКОВЫХ ДАННЫХ (LST)
+    # Используем current_time для определения окна поиска, если нужно
+    # ============================================================
     lst_cache = {}
     if ee_initialized:
         logger.info("\n" + "=" * 70)
@@ -214,27 +193,35 @@ def main():
                 last_event = region_data.iloc[0]
                 lat = last_event['latitude']
                 lon = last_event['longitude']
+                
+                # Используем текущую (или тестовую) дату как центр окна
+                end_date = current_time.strftime('%Y-%m-%d')
+                start_date = (current_time - timedelta(days=7)).strftime('%Y-%m-%d')
+                
                 try:
-                    end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-                    start_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d')
                     lst_data = get_lst_data(lat, lon, start_date, end_date)
-                    
                     if lst_data.get('lst_celsius') is not None:
                         lst_cache[region_name] = lst_data
-                        logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C (изобр: {lst_data['count']})")
+                        logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C")
                     else:
-                        error_msg = lst_data.get('error', 'Неизвестная ошибка')
-                        logger.warning(f"⚠️ Нет LST для {region_name}: {error_msg}")
+                        logger.warning(f"⚠️ Нет LST для {region_name}")
                         lst_cache[region_name] = None
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка LST для {region_name}: {e}")
                     lst_cache[region_name] = None
-    else:
-        logger.info("ℹ️ Пропускаем спутниковые данные (GEE недоступен)")
 
-    # ═══════════════════════════════════════════════════════════════
-    # 1c. СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (погода, ионосфера, космос)
-    # ═══════════════════════════════════════════════════════════════
+    # ============================================================
+    # ЭТАП 1c: СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (Погода, Ионосфера, Космос)
+    # ВАЖНО: Здесь мы используем current_time только если нет конкретных событий.
+    # Но для ионосферы мы берем время конкретного события (row['time']).
+    # В режиме TEST_MODE мы НЕ меняем даты событий здесь, мы полагаемся на то,
+    # что если нам нужны данные именно за дату события, а не за "сейчас",
+    # то логика внутри fetch_for_event должна работать корректно.
+    
+    # ОДНАКО: Если твой iono.fetch_for_event использует datetime.now() внутри себя,
+    # тебе нужно передать туда current_time явно. 
+    # Ниже я предполагаю, что fetch_for_event берет время из события.
+    # ============================================================
     min_mag_for_detail = settings.get('analysis', {}).get('detail_min_magnitude', 5.0)
     event_weather = {}
     event_iono = {}
@@ -249,7 +236,7 @@ def main():
 
     if not strong_events.empty:
         logger.info("\n" + "=" * 70)
-        logger.info(f"📌 ЭТАП 1c: Сбор дополнительных данных для {len(strong_events)} сильных событий (M≥{min_mag_for_detail})")
+        logger.info(f"📌 ЭТАП 1c: Сбор дополнительных данных для {len(strong_events)} сильных событий")
         logger.info("=" * 70)
 
         weather = WeatherCollector() if WEATHER_AVAILABLE else None
@@ -260,28 +247,35 @@ def main():
             event_id = row['id']
             lat = row['latitude']
             lon = row['longitude']
-            event_time = row['time']
+            event_time = row['time'] # Время события из USGS
+            
+            # ⚠️ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ДЛЯ ТЕСТОВОГО РЕЖИМА:
+            # Если включен TEST_MODE, мы заменяем время события на тестовое,
+            # чтобы fetch_for_event скачал реальные файлы 2023 года.
+            if TEST_MODE:
+                logger.debug(f"ℹ️ Событие {event_id}: заменяем дату с {event_time} на {current_time}")
+                event_time = current_time
+                # Обновляем в DataFrame для последующих этапов
+                strong_events.at[idx, 'time'] = current_time
+
             mag = row['magnitude']
             
             if row.get('is_aftershock', False):
-                logger.info(f"⏭️ Афтершок {event_id}, пропускаем сбор данных")
                 continue
             
-            logger.info(f"🔍 Событие {event_id} M{mag:.1f} в {event_time}")
+            logger.info(f"🔍 Событие {event_id} M{mag:.1f}")
 
             # Погода
             if weather:
                 try:
                     wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
-                    if not wdf.empty:
-                        event_weather[event_id] = wdf
-                        logger.info(f"   🌡️ Погода: {len(wdf)} дней")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Ошибка погоды: {e}")
+                    if not wdf.empty: event_weather[event_id] = wdf
+                except Exception as e: logger.warning(f"   ⚠️ Погода: {e}")
 
-            # Ионосфера (TEC, ROTI) + АНАЛИЗ АНОМАЛИЙ
+            # Ионосфера
             if iono:
                 try:
+                    # Теперь здесь будет дата 2023-01-15, если TEST_MODE=true
                     iono_result = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
                     
                     if iono_result.get('is_anomaly', False):
@@ -289,13 +283,11 @@ def main():
                     else:
                         logger.info(f"   ✅ Ионосфера: {iono_result.get('details', 'В норме')}")
                     
-                    # Сохраняем результат даже если нет данных
                     event_iono[event_id] = iono_result
-                    
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Ошибка ионосферы: {e}")
+                    logger.warning(f"   ⚠️ Ионосфера: {e}")
 
-            # Космическая погода (Kp, Dst, F10.7)
+            # Космическая погода
             if space:
                 try:
                     start = event_time - timedelta(days=7)
@@ -303,36 +295,19 @@ def main():
                     space_data = space.fetch_all_for_period(start, end)
                     if any(not df.empty for df in space_data.values()):
                         event_space[event_id] = space_data
-                        logger.info(f"   ☀️ Космическая погода: загружена")
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Ошибка космической погоды: {e}")
+                    logger.warning(f"   ⚠️ Космос: {e}")
 
-        logger.info(f"✅ Собрано: погода для {len(event_weather)} событий, "
-                    f"ионосфера для {len(event_iono)}, космос для {len(event_space)}")
+        logger.info(f"✅ Собрано: погода {len(event_weather)}, ионосфера {len(event_iono)}, космос {len(event_space)}")
     else:
-        logger.info("ℹ️ Нет сильных событий для детального сбора данных.")
-
+        logger.info("ℹ️ Нет сильных событий для детального сбора.")
 
     # ============================================================
-    # 🔥 ОТЛАДКА: ПРИНУДИТЕЛЬНАЯ ДАТА ДЛЯ ПРОВЕРКИ РЕАЛЬНОГО СКАЧИВАНИЯ
-    # Удали этот блок после проверки!
+    # ЭТАПЫ 1d, 1e, 2, 3, 4: ИИ, Прогноз, LAIC, Отчеты
+    # (Оставлено без изменений, кроме импортов в начале, чтобы не дублировать)
     # ============================================================
-    TEST_MODE = True 
-    
-    if TEST_MODE and not strong_events.empty:
-        # Берем первое событие и меняем дату на 15.01.2023 (UTC)
-        test_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
-        
-        logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ: Принудительно установлена дата события: 2023-01-15")
-        logger.warning("🛠️ Цель: скачать реальные codg-файлы за 2023 и фон за 2022")
-        
-        # Обновляем дату в DataFrame
-        strong_events.iloc[0]['time'] = test_date
-        
-        # Если у тебя события хранятся в словаре или списке отдельно, обнови и там
-        # data['events'][0]['time'] = test_date 
-    
 
+    
     # ═══════════════════════════════════════════════════════════════
     # 1d. ИИ-АНАЛИЗ АНОМАЛИЙ
     # ═══════════════════════════════════════════════════════════════
