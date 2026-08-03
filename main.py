@@ -11,15 +11,37 @@ import logging
 import pandas as pd
 import requests
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from aftershock_filter import filter_aftershocks
 
-# Логи в stdout
+# ═══════════════════════════════════════════════════════════════
+# ЛОГИРОВАНИЕ
+# ═══════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('LAIC')
+
+# ═══════════════════════════════════════════════════════════════
+# СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
+# ═══════════════════════════════════════════════════════════════
+def ensure_directories():
+    """Создаёт необходимые папки для работы бота."""
+    directories = [
+        "data",
+        "data/cache",
+        "data/ionex_cache",
+        "data/models",
+        "config"
+    ]
+    for directory in directories:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        logger.debug(f"📁 Папка: {directory}")
+
+# Создаём папки
+ensure_directories()
 
 # ═══════════════════════════════════════════════════════════════
 # ИМПОРТЫ МОДУЛЕЙ (с проверкой наличия)
@@ -130,7 +152,6 @@ def main():
     total = sum(len(df) for df in data.values())
     logger.info(f"\n📊 Всего событий: {total}")
 
-
     # ═══════════════════════════════════════════════════════════════
     # 1a. ФИЛЬТРАЦИЯ АФТЕРШОКОВ
     # ═══════════════════════════════════════════════════════════════
@@ -142,7 +163,6 @@ def main():
     aftershock_counts = {}
     
     for region_name, df in data.items():
-        # Убедимся, что df — это DataFrame
         if not isinstance(df, pd.DataFrame):
             logger.warning(f"⚠️ {region_name}: не DataFrame, пропускаем")
             data_filtered[region_name] = pd.DataFrame()
@@ -163,12 +183,10 @@ def main():
             aftershock_counts[region_name] = len(df_aftershocks)
             logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)} из {len(df)} событий")
     
-    # Заменяем исходные данные на отфильтрованные
     data = data_filtered
     
     total_filtered = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
     logger.info(f"\n📊 После фильтрации: {total_filtered} событий (удалено {sum(aftershock_counts.values())} афтершоков)")
-    
     
     # ═══════════════════════════════════════════════════════════════
     # 1b. СБОР СПУТНИКОВЫХ ДАННЫХ (LST) — если доступен GEE
@@ -201,18 +219,15 @@ def main():
                     lst_cache[region_name] = None
     else:
         logger.info("ℹ️ Пропускаем спутниковые данные (GEE недоступен)")
-    
 
     # ═══════════════════════════════════════════════════════════════
     # 1c. СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (погода, ионосфера, космос)
-    #     только для сильных событий (M >= detail_min_magnitude)
     # ═══════════════════════════════════════════════════════════════
     min_mag_for_detail = settings.get('analysis', {}).get('detail_min_magnitude', 5.0)
     event_weather = {}
     event_iono = {}
     event_space = {}
 
-    # Объединяем все данные в один DataFrame (пропуская пустые)
     all_events = pd.concat(
         [df for df in data.values() if not df.empty],
         ignore_index=True
@@ -225,7 +240,6 @@ def main():
         logger.info(f"📌 ЭТАП 1c: Сбор дополнительных данных для {len(strong_events)} сильных событий (M≥{min_mag_for_detail})")
         logger.info("=" * 70)
 
-        # Инициализация сборщиков (если доступны)
         weather = WeatherCollector() if WEATHER_AVAILABLE else None
         iono = IonosphereCollector() if IONO_AVAILABLE else None
         space = SpaceWeatherCollector() if SPACE_AVAILABLE else None
@@ -236,14 +250,14 @@ def main():
             lon = row['longitude']
             event_time = row['time']
             mag = row['magnitude']
+            
+            if row.get('is_aftershock', False):
+                logger.info(f"⏭️ Афтершок {event_id}, пропускаем сбор данных")
+                continue
+            
             logger.info(f"🔍 Событие {event_id} M{mag:.1f} в {event_time}")
 
-            # Проверяем, не является ли событие афтершоком
-            if row.get('is_aftershock', False):
-                logger.info(f"   ⏭️ Афтершок, пропускаем сбор данных")
-                continue
-
-            # Погода (7 дней до, 3 после)
+            # Погода
             if weather:
                 try:
                     wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
@@ -253,13 +267,19 @@ def main():
                 except Exception as e:
                     logger.warning(f"   ⚠️ Ошибка погоды: {e}")
 
-            # Ионосфера (TEC, ROTI)
+            # Ионосфера (TEC, ROTI) + АНАЛИЗ АНОМАЛИЙ
             if iono:
                 try:
-                    iono_data = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
-                    if iono_data['tec'] is not None and not iono_data['tec'].empty:
-                        event_iono[event_id] = iono_data
-                        logger.info(f"   🛰️ Ионосфера: TEC {len(iono_data['tec'])} записей")
+                    iono_result = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
+                    
+                    if iono_result.get('is_anomaly', False):
+                        logger.critical(f"   🔴🔴🔴 ИОНОСФЕРНАЯ АНОМАЛИЯ: {iono_result.get('details', '')}")
+                    else:
+                        logger.info(f"   ✅ Ионосфера: {iono_result.get('details', 'В норме')}")
+                    
+                    # Сохраняем результат даже если нет данных
+                    event_iono[event_id] = iono_result
+                    
                 except Exception as e:
                     logger.warning(f"   ⚠️ Ошибка ионосферы: {e}")
 
@@ -275,14 +295,14 @@ def main():
                 except Exception as e:
                     logger.warning(f"   ⚠️ Ошибка космической погоды: {e}")
 
-        logger.info(f"✅ Собрано: погода для {len(event_weather)} событий, ионосфера для {len(event_iono)}, космос для {len(event_space)}")
+        logger.info(f"✅ Собрано: погода для {len(event_weather)} событий, "
+                    f"ионосфера для {len(event_iono)}, космос для {len(event_space)}")
     else:
         logger.info("ℹ️ Нет сильных событий для детального сбора данных.")
 
     # ═══════════════════════════════════════════════════════════════
     # 1d. ИИ-АНАЛИЗ АНОМАЛИЙ
     # ═══════════════════════════════════════════════════════════════
-    
     try:
         from anomaly_detector import AnomalyDetector
         from visualizer import create_anomaly_plot
@@ -296,21 +316,22 @@ def main():
         logger.info("🧠 ЭТАП 1d: ИИ-анализ аномалий")
         logger.info("=" * 70)
         
-        # Собираем данные для ИИ-анализа
         events_for_ai = []
         for region_name, df in data.items():
             if df.empty:
                 continue
             for idx, row in df.iterrows():
-                # Безопасное получение LST
                 lst_data = lst_cache.get(region_name)
                 lst_celsius = 0
                 if lst_data and isinstance(lst_data, dict):
                     lst_celsius = lst_data.get('lst_celsius', 0)
                 
-                # Формируем данные для ИИ
+                # Добавляем данные ионосферы, если есть
+                event_id = row.get('id', f'event_{idx}')
+                iono_info = event_iono.get(event_id, {})
+                
                 event_data = {
-                    'id': row.get('id', f'event_{idx}'),
+                    'id': event_id,
                     'region': region_name,
                     'magnitude': row.get('magnitude', 0),
                     'depth_km': row.get('depth_km', 0),
@@ -324,7 +345,9 @@ def main():
                         'mean': row.get('kp_mean', 0),
                         'max': row.get('kp_max', 0),
                         'std': row.get('kp_std', 0)
-                    }
+                    },
+                    'iono_anomaly': iono_info.get('is_anomaly', False),
+                    'z_score_max': iono_info.get('z_score_max', 0.0)
                 }
                 events_for_ai.append(event_data)
         
@@ -333,13 +356,11 @@ def main():
             anomaly_df = detector.analyze_events(events_for_ai)
             
             if not anomaly_df.empty:
-                # Подсчитываем аномалии по регионам
                 anomaly_counts = anomaly_df.groupby('region')['is_anomaly'].sum().to_dict()
                 for region, count in anomaly_counts.items():
                     if count > 0:
                         logger.info(f"   🔴 {region}: обнаружено {count} аномалий")
                 
-                # Отправляем график с аномалиями
                 if TG_AVAILABLE and chat_id:
                     for region_name in anomaly_df['region'].unique():
                         region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
@@ -356,11 +377,9 @@ def main():
     else:
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
 
-
     # ═══════════════════════════════════════════════════════════════
     # 1e. ПРОГНОЗИРОВАНИЕ (LSTM)
     # ═══════════════════════════════════════════════════════════════
-    
     try:
         from predictor import EarthquakePredictor
         PREDICTOR_AVAILABLE = True
@@ -375,7 +394,6 @@ def main():
         
         predictor = EarthquakePredictor()
         
-        # Подготавливаем данные для обучения
         training_data = []
         for _, row in all_events.iterrows():
             mag = row.get('magnitude', 0)
@@ -393,16 +411,13 @@ def main():
         df_train = pd.DataFrame(training_data)
         
         if len(df_train) >= 20:
-            # Обучаем модель
             predictor.train(df_train, epochs=30)
             
-            # Прогноз на основе последних данных
             prob, pred_mag = predictor.predict(df_train)
             if prob is not None:
                 logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
                 logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
                 
-                # Формируем сообщение для Telegram
                 if prob > 0.5:
                     status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
                 elif prob > 0.3:
@@ -420,35 +435,24 @@ def main():
                     f"{status}"
                 )
                 
-                # Отправляем прогноз в Telegram
                 try:
                     token = os.environ.get('TELEGRAM_BOT_TOKEN')
                     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
                     if token and chat_id:
                         url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        # ✅ ПРАВИЛЬНО (используем другое имя):
                         payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
-                        response = requests.post(url, data=payload)
-                        
-                        #data = {
-                           #'chat_id': chat_id,
-                           #'text': forecast_msg,
-                            #'parse_mode': 'HTML'
-                        #}
-                        #response = requests.post(url, data=data, timeout=30)
+                        response = requests.post(url, data=payload, timeout=30)
                         if response.status_code == 200:
                             logger.info("✅ Прогноз отправлен в Telegram")
                         else:
                             logger.error(f"❌ Ошибка отправки прогноза: {response.text}")
-                    else:
-                        logger.warning("⚠️ Токен Telegram не найден, прогноз не отправлен")
                 except Exception as e:
                     logger.error(f"❌ Ошибка отправки прогноза: {e}")
         else:
             logger.info(f"ℹ️ Прогнозирование пропущено (нужно ≥20 событий, собрано {len(df_train)})")
     else:
-        logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")    
-    
+        logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")
+
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
@@ -468,7 +472,6 @@ def main():
     logger.info("=" * 70)
 
     if TG_AVAILABLE:
-        # Основной отчёт
         try:
             success = send_sync(results)
             if success:
@@ -478,7 +481,6 @@ def main():
         except Exception as e:
             logger.error(f"❌ Ошибка отправки отчёта: {e}")
 
-        # Алерты
         alerts_sent = 0
         for r in results:
             if r.get('alert'):
@@ -501,12 +503,11 @@ def main():
         period_days = settings.get('analysis', {}).get('history_days', 30)
 
         for region_name, df in data.items():
-            if df.empty:
+            if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
 
             lst_info = lst_cache.get(region_name)
 
-            # PNG-график
             try:
                 img_bytes = plot_magnitude_series(df, region_name)
                 if img_bytes:
@@ -516,7 +517,6 @@ def main():
             except Exception as e:
                 logger.error(f"❌ Ошибка генерации PNG для {region_name}: {e}")
 
-            # HTML-отчёт
             try:
                 html_path = create_interactive_report(region_name, df, lst_info, period_days=period_days)
                 if html_path:
@@ -547,7 +547,7 @@ def main():
     logger.info("=" * 70)
 
     if critical > 0:
-        sys.exit(0)  # Не считать ошибкой
+        sys.exit(0)
 
 
 if __name__ == '__main__':
