@@ -83,62 +83,84 @@ class TelegramSender:
             ""
         ]
         
-        # Максимальный риск
-        max_risk = max(results, key=lambda x: x['risk_score'])
+        # Фильтруем только регионы (исключаем элементы с type='stats')
+        region_results = [r for r in results if r.get('type') != 'stats']
         
-        if max_risk['risk_score'] > 0:
+        if not region_results:
+            lines.append("⚠️ Нет данных для отображения")
+            return '\n'.join(lines)
+        
+        # Максимальный риск
+        max_risk = max(region_results, key=lambda x: x.get('risk_score', 0))
+        
+        if max_risk.get('risk_score', 0) > 0:
             lines.extend([
-                f"<b>🔥 Наибольший риск:</b> {max_risk['region']}",
-                f"{max_risk['emoji']} {max_risk['risk_level'].upper()} "
-                f"(<code>{max_risk['risk_score']:.0f}/100</code>)",
+                f"<b>🔥 Наибольший риск:</b> {max_risk.get('region', 'Unknown')}",
+                f"{max_risk.get('emoji', '')} {max_risk.get('risk_level', 'unknown').upper()} "
+                f"(<code>{max_risk.get('risk_score', 0):.0f}/100</code>)",
                 ""
             ])
         
         # По регионам
         lines.append("<b>📍 РЕГИОНЫ:</b>\n")
         
-        for r in results:
+        for r in region_results:
             # Основная строка
+            region_name = r.get('region', 'Unknown')
+            risk_score = r.get('risk_score', 0)
+            emoji = r.get('emoji', '')
+            risk_level = r.get('risk_level', 'unknown')
+            
             lines.append(
-                f"{r['emoji']} <b>{r['region']}</b> "
-                f"<code>{r['risk_score']:.0f}/100</code>"
+                f"{emoji} <b>{region_name}</b> "
+                f"<code>{risk_score:.0f}/100</code>"
             )
             
-            # Детали
-            stats = r['stats']
+            # Детали — безопасное получение stats
+            stats = r.get('stats', {})
+            if not stats:
+                # Если stats нет, используем другие доступные поля
+                stats = {
+                    'max_mag_7d': r.get('max_mag_7d', 0),
+                    'events_24h': r.get('events_24h', 0),
+                    'energy_7d': r.get('energy_7d', 0)
+                }
+            
             details = []
             
-            if stats['max_mag_7d'] > 0:
+            if stats.get('max_mag_7d', 0) > 0:
                 details.append(f"  Mmax7д={stats['max_mag_7d']:.1f}")
-            if stats['events_24h'] > 0:
+            if stats.get('events_24h', 0) > 0:
                 details.append(f"  N24ч={stats['events_24h']}")
-            if r['swarm']['is_swarm']:
+            if r.get('swarm', {}).get('is_swarm', False):
                 details.append(f"  ⚡ РОЙ!")
-            if r['magnitude_trend'].get('trend_detected'):
+            if r.get('magnitude_trend', {}).get('trend_detected', False):
                 details.append(f"  📈 тренд↑")
             
             if details:
                 lines.append(' |'.join(details))
             
             # Значимые события
-            if r['significant_events']:
+            significant_events = r.get('significant_events', [])
+            if significant_events:
                 lines.append("  🎯 Последние:")
-                for evt in r['significant_events'][-2:]:  # Последние 2
+                for evt in significant_events[-2:]:  # Последние 2
                     lines.append(
-                        f"    {evt['mag_formatted']} | {evt['time_ago']} | "
-                        f"{evt['place'][:35]}"
+                        f"    {evt.get('mag_formatted', '')} | {evt.get('time_ago', '')} | "
+                        f"{evt.get('place', '')[:35]}"
                     )
             
             lines.append("")  # Пустая строка
         
         # Итоговая статистика
-        critical = sum(1 for r in results if r['risk_level'] == 'critical')
-        high = sum(1 for r in results if r['risk_level'] == 'high')
-        moderate = sum(1 for r in results if r['risk_level'] == 'moderate')
+        critical = sum(1 for r in region_results if r.get('risk_level') == 'critical')
+        high = sum(1 for r in region_results if r.get('risk_level') == 'high')
+        moderate = sum(1 for r in region_results if r.get('risk_level') == 'moderate')
+        low = len(region_results) - critical - high - moderate
         
         lines.extend([
             f"{'─' * 38}",
-            f"📊 Итого: 🔴×{critical} 🟠×{high} 🟡×{moderate} 🟢×{len(results)-critical-high-moderate}",
+            f"📊 Итого: 🔴×{critical} 🟠×{high} 🟡×{moderate} 🟢×{low}",
             f"⏰ Следующий отчёт: через 12 часов",
             f"🌐 Источник: USGS | Метод: LAIC"
         ])
@@ -148,29 +170,38 @@ class TelegramSender:
     def _format_alert(self, result):
         """Форматирует срочное оповещение."""
         
+        # Безопасное получение stats
+        stats = result.get('stats', {})
+        if not stats:
+            stats = {
+                'max_mag_7d': result.get('max_mag_7d', 0),
+                'events_24h': result.get('events_24h', 0),
+                'energy_7d': result.get('energy_7d', 0)
+            }
+        
         lines = [
             f"🚨 <b>ВНИМАНИЕ! ВЫСОКИЙ РИСК ЗЕМЛЕТРЯСЕНИЯ</b>",
             f"{'─' * 35}",
-            f"{result['emoji']} <b>{result['region']}</b>",
+            f"{result.get('emoji', '')} <b>{result.get('region', 'Unknown')}</b>",
             f"",
-            f"Уровень: <b>{result['risk_level'].upper()}</b>",
-            f"Индекс риска: <code>{result['risk_score']:.0f}/100</code>",
+            f"Уровень: <b>{result.get('risk_level', 'unknown').upper()}</b>",
+            f"Индекс риска: <code>{result.get('risk_score', 0):.0f}/100</code>",
             f"",
             f"📊 Данные:",
-            f"  • Макс M за 7д: {result['stats']['max_mag_7d']:.1f}",
-            f"  • Событий за 24ч: {result['stats']['events_24h']}",
-            f"  • Энергия за 7д: {result['energy']['7d']['total_energy_kt']:.2f} кт TNT",
+            f"  • Макс M за 7д: {stats.get('max_mag_7d', 0):.1f}",
+            f"  • Событий за 24ч: {stats.get('events_24h', 0)}",
+            f"  • Энергия за 7д: {stats.get('energy_7d', 0):.2f} кт TNT",
         ]
         
-        if result['swarm']['is_swarm']:
+        if result.get('swarm', {}).get('is_swarm', False):
             lines.append(f"  • ⚡ Обнаружен РОЙ землетрясений!")
         
-        if result['magnitude_trend'].get('trend_detected'):
+        if result.get('magnitude_trend', {}).get('trend_detected', False):
             lines.append(f"  • 📈 Нарастание магнитуд!")
         
         lines.extend([
             f"",
-            f"💡 {result['recommendation'][:150]}...",
+            f"💡 {result.get('recommendation', 'Будьте внимательны')[:150]}...",
             f"",
             f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
         ])
@@ -212,7 +243,7 @@ class TelegramSender:
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
-            logger.info(f"🚨 АЛЕРТ отправлен: {result['region']}")
+            logger.info(f"🚨 АЛЕРТ отправлен: {result.get('region', 'Unknown')}")
             return True
             
         except Exception as e:
@@ -229,4 +260,3 @@ def send_sync(results):
 def alert_sync(result):
     sender = TelegramSender()
     return asyncio.run(sender.send_alert(result))
-      
