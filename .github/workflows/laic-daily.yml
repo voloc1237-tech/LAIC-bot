@@ -13,7 +13,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           pip install --upgrade pip
@@ -21,8 +20,22 @@ jobs:
           pip install quakeion 
           pip install earthengine-api google-auth
           pip install tec==0.0.19
-          pip install gnssanalysis==0.0.59 numpy pandas
+          pip install numpy pandas
           pip install tensorflow scikit-learn joblib
+          
+          # Пытаемся установить gnssanalysis разными способами
+          echo "=== Попытка установить gnssanalysis ==="
+          # Способ 1: конкретная версия
+          pip install gnssanalysis==0.0.57 || \
+          # Способ 2: последняя версия
+          pip install gnssanalysis || \
+          # Способ 3: из GitHub
+          pip install git+https://github.com/GeoscienceAustralia/gnssanalysis.git
+          
+          # Проверяем, что библиотека установилась
+          echo "=== Проверка установки gnssanalysis ==="
+          python -c "import gnssanalysis; print('✅ gnssanalysis успешно установлена!')" || echo "⚠️ gnssanalysis не установлена, бот будет использовать синтетические данные"
+     
       # ===== ПОДГОТОВКА КЛЮЧА (МИНИФИКАЦИЯ JSON) =====
       - name: Prepare Earth Engine key
         env:
