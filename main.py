@@ -41,7 +41,7 @@ ensure_directories()
 
 # GEE
 try:
-    from ee_collector import GEEInitializer, get_lst_data
+    from ee_collector import GEEInitializer, get_lst_data, get_all_gee_data
     GEE_AVAILABLE = True
 except ImportError:
     GEE_AVAILABLE = False
@@ -201,18 +201,57 @@ def main():
                 
                 end_date = current_time.strftime('%Y-%m-%d')
                 start_date = (current_time - timedelta(days=7)).strftime('%Y-%m-%d')
+
+                # Что должно быть:
+            try:
+                from ee_collector import get_all_gee_data
+                gee_result = get_all_gee_data(lat, lon, start_date, end_date)
+    
+                # LST
+                lst_data = gee_result.get('lst', {})
+                if lst_data.get('lst_celsius') is not None:
+                    logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C")
+                else:
+                    logger.warning(f"⚠️ Нет LST для {region_name}: {lst_data.get('error', 'unknown')}")
+    
+                # SO2
+                so2_data = gee_result.get('so2', {})
+                if so2_data.get('so2') is not None:
+                    source = so2_data.get('source', 'unknown')
+                    logger.info(f"💨 {region_name}: SO₂ = {so2_data['so2']} {so2_data.get('unit', '')} (source: {source})")
+                else:
+                    logger.warning(f"⚠️ Нет SO₂ для {region_name}")
+    
+                # CO
+                co_data = gee_result.get('co', {})
+                if co_data.get('co') is not None:
+                    source = co_data.get('source', 'unknown')
+                    logger.info(f"🏭 {region_name}: CO = {co_data['co']} {co_data.get('unit', '')} (source: {source})")
+    
+                # CH4
+                ch4_data = gee_result.get('ch4', {})
+                if ch4_data.get('ch4') is not None:
+                    source = ch4_data.get('source', 'unknown')
+                    logger.info(f"🌿 {region_name}: CH₄ = {ch4_data['ch4']} {ch4_data.get('unit', '')} (source: {source})")
+    
+                gee_cache[region_name] = gee_result
+    
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка GEE для {region_name}: {e}")
+                gee_cache[region_name] = None
+
                 
-                try:
-                    lst_data = get_lst_data(lat, lon, start_date, end_date)
-                    if lst_data.get('lst_celsius') is not None:
-                        lst_cache[region_name] = lst_data
-                        logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C")
-                    else:
-                        logger.warning(f"⚠️ Нет LST для {region_name}")
-                        lst_cache[region_name] = None
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка LST для {region_name}: {e}")
-                    lst_cache[region_name] = None
+                #try:
+                    #lst_data = get_lst_data(lat, lon, start_date, end_date)
+                    #if lst_data.get('lst_celsius') is not None:
+                        #lst_cache[region_name] = lst_data
+                        #logger.info(f"🌡️ {region_name}: LST = {lst_data['lst_celsius']}°C")
+                    #else:
+                        #logger.warning(f"⚠️ Нет LST для {region_name}")
+                        #lst_cache[region_name] = None
+                #except Exception as e:
+                    #logger.warning(f"⚠️ Ошибка LST для {region_name}: {e}")
+                    #lst_cache[region_name] = None
 
     # ============================================================
     # ЭТАП 1c: СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ
