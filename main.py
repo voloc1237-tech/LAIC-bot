@@ -99,16 +99,16 @@ def main():
     # ОПРЕДЕЛЕНИЕ ДАТЫ
     # ============================================================
     
-    test_mode_str = os.environ.get('TEST_MODE', 'false').lower()
-    TEST_MODE = (test_mode_str == 'true')
+    #test_mode_str = os.environ.get('TEST_MODE', 'false').lower()
+    #TEST_MODE = (test_mode_str == 'true')
     
-    current_time = datetime.now(timezone.utc)
+    #current_time = datetime.now(timezone.utc)
     
-    if TEST_MODE:
-        forced_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
-        logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ АКТИВИРОВАН!")
-        logger.warning(f"📅 Дата принудительно изменена на: {forced_date.isoformat()}")
-        current_time = forced_date
+    #if TEST_MODE:
+        #forced_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        #logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ АКТИВИРОВАН!")
+        #logger.warning(f"📅 Дата принудительно изменена на: {forced_date.isoformat()}")
+        #current_time = forced_date
     else:
         logger.info(f"⏰ Реальный режим: текущая дата {current_time.isoformat()}")
 
