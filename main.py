@@ -210,24 +210,7 @@ def main():
                 from ee_collector import get_all_gee_data
                 gee_result = get_all_gee_data(lat, lon, start_date, end_date)
     
-                def get_lst_with_fallback(lat, lon, date, window_days=7):
-                    """Получить LST с fallback на ERA5"""
-                    try:
-                        # Пробуем MODIS LST
-                        lst = get_modis_lst(lat, lon, date, window_days)
-                        if lst is not None:
-                            return {'value': lst, 'source': 'MODIS_LST'}
-                    except Exception as e:
-                        logging.warning(f"MODIS LST недоступен: {e}")
-    
-                    # Fallback: ERA5 2m temperature
-                    try:
-                        t2m = get_era5_2m_temperature(lat, lon, date)
-                        return {'value': t2m, 'source': 'ERA5_t2m_proxy'}
-                    except Exception as e:
-                        logging.error(f"ERA5 тоже недоступен: {e}")
-                        return {'value': None, 'source': 'unavailable'}
-        
+                
                 # LST
                 lst_data = gee_result.get('lst', {})
                 if lst_data.get('lst_celsius') is not None:
@@ -249,24 +232,7 @@ def main():
                     source = co_data.get('source', 'unknown')
                     logger.info(f"🏭 {region_name}: CO = {co_data['co']} {co_data.get('unit', '')} (source: {source})")
     
-                # Для CH4: увеличить временное окно или использовать усреднение по области
-                def get_ch4_with_spatial_average(lat, lon, date, radius_km=50):
-                    """CH4 с пространственным усреднением вокруг эпицентра"""
-                    region = ee.Geometry.Point(lon, lat).buffer(radius_km * 1000)
-    
-                    collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CH4') \
-                        .select('CH4_column_volume_mixing_ratio_dry_air') \
-                        .filterDate(date - 7 days, date) \
-                        .filterBounds(region)
-    
-                    # Усреднение по доступным пикселям в регионе
-                    mean_ch4 = collection.mean().reduceRegion(
-                        reducer=ee.Reducer.mean(),
-                        geometry=region,
-                        scale=7000  # TROPOMI CH4 resolution
-                    ).get('CH4_column_volume_mixing_ratio_dry_air')
-    
-                    return mean_ch4
+                
 
                 # CH4
                 ch4_data = gee_result.get('ch4', {})
