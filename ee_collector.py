@@ -221,39 +221,45 @@ class HistoricalGasData:
 # NEW: ERA5 2m TEMPERATURE FALLBACK FOR LST
 # INSERT AFTER HistoricalGasData class, BEFORE get_lst_data()
 # ═══════════════════════════════════════════════════════════════
-
-def get_era5_2m_temperature(lat: float, lon: float, date_start: str, date_end: str):
+def get_era5_2m_temperature(lat, lon, date_start, date_end):
     """
-    ERA5 2m temperature as fallback proxy for LST.
-    Returns temperature in Celsius.
+    ERA5 2m temperature — используем обычный ERA5 вместо ERA5-LAND для океана.
     """
-    if not GEEInitializer.init():
-        raise RuntimeError("Earth Engine не инициализирован!")
-    
     point = ee.Geometry.Point([lon, lat])
     
-    collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
+    # Пробуем ERA5-LAND (высокое разрешение, только суша)
+    collection_land = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
         .select('temperature_2m') \
+        .filterDate(date_start, date_end) \
+        .filterBounds(point)
+    
+    count_land = collection_land.size().getInfo()
+    
+    if count_land > 0:
+        temp = collection_land.mean().sample(point, 10000).first()
+        value, error = safe_get_info(temp, 'temperature_2m')
+        if not error:
+            return round(value - 273.15, 2)
+    
+    # Fallback: обычный ERA5 (покрывает океан)
+    logger.info("🌊 Пробуем ERA5 (не LAND) для морской точки...")
+    collection = ee.ImageCollection('ECMWF/ERA5/DAILY') \
+        .select('mean_2m_air_temperature') \
         .filterDate(date_start, date_end) \
         .filterBounds(point)
     
     count = collection.size().getInfo()
     if count == 0:
-        logger.warning(f"⚠️ Нет ERA5 данных для ({lat}, {lon})")
         return None
     
-    mean_temp = collection.mean()
-    sample = mean_temp.sample(point, 10000).first()
-    
-    value, error = safe_get_info(sample, 'temperature_2m')
+    temp = collection.mean().sample(point, 27830).first()
+    value, error = safe_get_info(temp, 'mean_2m_air_temperature')
     
     if error:
-        logger.warning(f"⚠️ ERA5 t2m ошибка: {error}")
         return None
     
-    # Convert from Kelvin to Celsius
-    temp_celsius = value - 273.15
-    
+    return round(value - 273.15, 2)
+  
     logger.info(f"✅ ERA5 t2m: {temp_celsius:.2f}°C (fallback for LST)")
     return round(temp_celsius, 2)
 
