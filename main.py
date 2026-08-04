@@ -234,11 +234,11 @@ def main():
                     source = ch4_data.get('source', 'unknown')
                     logger.info(f"🌿 {region_name}: CH₄ = {ch4_data['ch4']} {ch4_data.get('unit', '')} (source: {source})")
     
-                gee_cache[region_name] = gee_result
+                lst_cache[region_name] = gee_result
     
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка GEE для {region_name}: {e}")
-                gee_cache[region_name] = None
+                lst_cache[region_name] = None
 
                 
                 #try:
