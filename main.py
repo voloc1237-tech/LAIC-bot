@@ -536,6 +536,147 @@ def main():
         logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")
         
     # ═══════════════════════════════════════════════════════════════
+    # НОВОЕ: ЭТАП 1f — ПРОГНОЗИРОВАНИЕ ВРЕМЕНИ И МЕСТА
+    # ═══════════════════════════════════════════════════════════════
+    
+    try:
+        from earthquake_predictor import (
+            EarthquakePredictor, 
+            create_risk_report,
+            CONFIG as PREDICTOR_CONFIG
+        )
+        PREDICTOR_AVAILABLE = True
+    except ImportError as e:
+        PREDICTOR_AVAILABLE = False
+        logger.warning(f"⚠️ Модуль прогнозирования недоступен: {e}")
+    
+    if PREDICTOR_AVAILABLE and len(all_events) >= 30:
+        logger.info("\n" + "=" * 70)
+        logger.info("🔮 ЭТАП 1f: Прогнозирование времени и места")
+        logger.info("=" * 70)
+        
+        predictor = EarthquakePredictor(model_dir="data/models")
+        
+        # Подготовка кэшей для обучения
+        iono_cache = {event_id: data for event_id, data in event_iono.items()}
+        space_cache = {event_id: data for event_id, data in event_space.items()}
+        weather_cache = {event_id: data for event_id, data in event_weather.items()}
+        
+        # Обучение/загрузка моделей
+        if not predictor.is_trained:
+            logger.info("🧠 Обучение моделей прогнозирования...")
+            
+            X, y = predictor.prepare_training_data(
+                events_df=all_events,
+                region_data_dict=data,
+                lst_cache=lst_cache,
+                iono_cache=iono_cache,
+                space_cache=space_cache,
+                weather_cache=weather_cache
+            )
+            
+            success = predictor.train(X, y)
+            if not success:
+                logger.warning("⚠️ Обучение не удалось, пропускаем прогноз")
+        
+        if predictor.is_trained:
+            # Прогноз для активных регионов (где были аномалии)
+            anomalous_regions = []
+            for region_name, df in data.items():
+                if not df.empty:
+                    # Берём последнее событие как центр региона
+                    last_event = df.iloc[0]
+                    anomalous_regions.append({
+                        'name': region_name,
+                        'lat': last_event['latitude'],
+                        'lon': last_event['longitude']
+                    })
+            
+            all_predictions = []
+            
+            for region in anomalous_regions:
+                logger.info(f"\n🔮 Прогноз для региона {region['name']}...")
+                
+                # Границы региона вокруг последнего события
+                region_bounds = {
+                    'lat_min': max(-80, region['lat'] - 8),
+                    'lat_max': min(80, region['lat'] + 8),
+                    'lon_min': region['lon'] - 10,
+                    'lon_max': region['lon'] + 10
+                }
+                
+                grid_pred = predictor.predict_grid(
+                    region_bounds=region_bounds,
+                    current_time=current_time,
+                    region_data_dict=data,
+                    lst_cache=lst_cache,
+                    resolution=2.0
+                )
+                
+                if not grid_pred.empty:
+                    all_predictions.append(grid_pred)
+                    
+                    # Логируем топ-3
+                    for i, (_, row) in enumerate(grid_pred.head(3).iterrows(), 1):
+                        emoji = "🔴" if row['is_alert'] else "🟠"
+                        logger.info(
+                            f"   {emoji} #{i}: "
+                            f"{row['predicted_lat']}°, {row['predicted_lon']}° | "
+                            f"M{row['predicted_magnitude']} | "
+                            f"{row['probability_m6']*100:.0f}% | "
+                            f"{row['days_to_event']:.0f}д"
+                        )
+            
+            # Объединяем и сортируем все прогнозы
+            if all_predictions:
+                combined_pred = pd.concat(all_predictions, ignore_index=True)
+                combined_pred = combined_pred.sort_values('probability_m6', ascending=False)
+                combined_pred = combined_pred.drop_duplicates(
+                    subset=['predicted_lat', 'predicted_lon'], keep='first'
+                )
+                
+                # Отправка отчёта
+                report_text = create_risk_report(combined_pred, top_n=5)
+                
+                if TG_AVAILABLE:
+                    try:
+                        alert_sync(report_text)
+                        logger.info("✅ Прогноз отправлен в Telegram")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка отправки прогноза: {e}")
+                
+                # Сохранение прогноза
+                combined_pred.to_csv(f"data/predictions_{current_time.strftime('%Y%m%d')}.csv", index=False)
+                logger.info(f"💾 Прогноз сохранён: {len(combined_pred)} зон")
+                
+                # Алерты для HIGH риска
+                high_risk = combined_pred[combined_pred['is_alert'] == True]
+                if not high_risk.empty:
+                    logger.critical(f"🚨 ОБНАРУЖЕНО {len(high_risk)} ЗОН ВЫСОКОГО РИСКА!")
+                    for _, row in high_risk.iterrows():
+                        alert_msg = (
+                            f"🚨 <b>КРИТИЧЕСКИЙ ПРЕДСЕЙСМИЧЕСКИЙ АЛЕРТ</b>\n\n"
+                            f"📍 Регион: {row['predicted_lat']}°, {row['predicted_lon']}°\n"
+                            f"📏 Радиус: ±{row['radius_km']} км\n"
+                            f"⏰ Ожидается: через {row['days_to_event']:.0f} дней\n"
+                            f"📊 Вероятность M≥6.0: <b>{row['probability_m6']*100:.1f}%</b>\n"
+                            f"🎯 Прогноз: M{row['predicted_magnitude']}\n\n"
+                            f"⚠️ На основе LAIC-аномалий и ИИ-модели\n"
+                            f"📅 {current_time.strftime('%Y-%m-%d %H:%M UTC')}"
+                        )
+                        if TG_AVAILABLE:
+                            alert_sync(alert_msg)
+            else:
+                logger.info("ℹ️ Значимых прогнозов не получено")
+        else:
+            logger.warning("⚠️ Модели не обучены, прогноз невозможен")
+    else:
+        if not PREDICTOR_AVAILABLE:
+            logger.info("ℹ️ Модуль прогнозирования недоступен")
+        else:
+            logger.info(f"ℹ️ Недостаточно данных для обучения ({len(all_events)} < 30)")
+
+    # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
     logger.info("\n" + "=" * 70)
