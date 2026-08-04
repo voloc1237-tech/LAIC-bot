@@ -70,7 +70,7 @@ class GEEInitializer:
                     None,
                     token_uri="https://oauth2.googleapis.com/token",
                     client_id=stored["client_id"],
-                    client_secret=stored["client_secret"],
+                    client_secret=stored["refresh_token"],
                     refresh_token=stored["refresh_token"],
                     quota_project_id=stored.get("project"),
                 )
@@ -218,6 +218,88 @@ class HistoricalGasData:
 
 
 # ═══════════════════════════════════════════════════════════════
+# NEW: ERA5 2m TEMPERATURE FALLBACK FOR LST
+# INSERT AFTER HistoricalGasData class, BEFORE get_lst_data()
+# ═══════════════════════════════════════════════════════════════
+
+def get_era5_2m_temperature(lat: float, lon: float, date_start: str, date_end: str):
+    """
+    ERA5 2m temperature as fallback proxy for LST.
+    Returns temperature in Celsius.
+    """
+    if not GEEInitializer.init():
+        raise RuntimeError("Earth Engine не инициализирован!")
+    
+    point = ee.Geometry.Point([lon, lat])
+    
+    collection = ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY') \
+        .select('temperature_2m') \
+        .filterDate(date_start, date_end) \
+        .filterBounds(point)
+    
+    count = collection.size().getInfo()
+    if count == 0:
+        logger.warning(f"⚠️ Нет ERA5 данных для ({lat}, {lon})")
+        return None
+    
+    mean_temp = collection.mean()
+    sample = mean_temp.sample(point, 10000).first()
+    
+    value, error = safe_get_info(sample, 'temperature_2m')
+    
+    if error:
+        logger.warning(f"⚠️ ERA5 t2m ошибка: {error}")
+        return None
+    
+    # Convert from Kelvin to Celsius
+    temp_celsius = value - 273.15
+    
+    logger.info(f"✅ ERA5 t2m: {temp_celsius:.2f}°C (fallback for LST)")
+    return round(temp_celsius, 2)
+
+
+# ═══════════════════════════════════════════════════════════════
+# NEW: CH4 WITH SPATIAL AVERAGING
+# INSERT AFTER get_era5_2m_temperature(), BEFORE get_lst_data()
+# ═══════════════════════════════════════════════════════════════
+
+def get_ch4_spatial_average(lat: float, lon: float, date_start: str, date_end: str, radius_km: int = 50):
+    """
+    CH4 with spatial averaging around epicenter.
+    Uses circular buffer to aggregate available pixels.
+    """
+    if not GEEInitializer.init():
+        raise RuntimeError("Earth Engine не инициализирован!")
+    
+    point = ee.Geometry.Point([lon, lat])
+    region = point.buffer(radius_km * 1000)  # Convert km to meters
+    
+    collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CH4') \
+        .select('CH4_column_volume_mixing_ratio_dry_air') \
+        .filterDate(date_start, date_end) \
+        .filterBounds(region)
+    
+    count = collection.size().getInfo()
+    if count == 0:
+        logger.warning(f"⚠️ Нет CH4 данных в радиусе {radius_km}км")
+        return None, 0
+    
+    # Spatial mean over region
+    mean_ch4 = collection.mean().reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=region,
+        scale=7000  # TROPOMI CH4 resolution ~7km
+    ).get('CH4_column_volume_mixing_ratio_dry_air')
+    
+    if mean_ch4 is None or mean_ch4.getInfo() is None:
+        return None, count
+    
+    value = float(mean_ch4.getInfo())
+    logger.info(f"✅ CH4 spatial avg ({radius_km}км): {value:.2f} ppb")
+    return round(value, 2), count
+
+
+# ═══════════════════════════════════════════════════════════════
 # GEE ФУНКЦИИ С HISTORICAL FALLBACK
 # ═══════════════════════════════════════════════════════════════
 
@@ -242,36 +324,82 @@ def safe_get_info(sample, property_name: str):
 
 
 def get_lst_data(lat: float, lon: float, date_start: str, date_end: str):
-    """LST из MODIS с проверками."""
+    """
+    LST из MODIS с проверками + ERA5 fallback.
+    """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    collection = ee.ImageCollection("MODIS/061/MOD11A1") \
+    # Try MODIS 8-day composite first (fewer gaps)
+    collection = ee.ImageCollection("MODIS/061/MOD11A2") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('LST_Day_1km')
     
     count = collection.size().getInfo()
-    if count == 0:
-        logger.warning(f"⚠️ Нет LST изображений для ({lat}, {lon})")
-        return {'lst_celsius': None, 'count': 0, 'error': 'No images'}
     
-    mean_lst = collection.mean()
-    sample = mean_lst.sample(point, 1000).first()
+    if count > 0:
+        mean_lst = collection.mean()
+        sample = mean_lst.sample(point, 1000).first()
+        
+        value, error = safe_get_info(sample, 'LST_Day_1km')
+        
+        if not error:
+            lst_celsius = (value * 0.02) - 273.15
+            logger.info(f"✅ MODIS LST (8-day): {lst_celsius:.2f}°C")
+            return {
+                'lst_celsius': round(lst_celsius, 2),
+                'count': count,
+                'source': 'MODIS_8day',
+                'period': f"{date_start} to {date_end}"
+            }
     
-    value, error = safe_get_info(sample, 'LST_Day_1km')
+    # Fallback 1: MODIS daily
+    collection_daily = ee.ImageCollection("MODIS/061/MOD11A1") \
+        .filterBounds(point) \
+        .filterDate(date_start, date_end) \
+        .select('LST_Day_1km')
     
-    if error:
-        logger.warning(f"⚠️ LST ошибка: {error}")
-        return {'lst_celsius': None, 'count': count, 'error': error}
+    count_daily = collection_daily.size().getInfo()
     
-    lst_celsius = (value * 0.02) - 273.15
+    if count_daily > 0:
+        mean_lst = collection_daily.mean()
+        sample = mean_lst.sample(point, 1000).first()
+        
+        value, error = safe_get_info(sample, 'LST_Day_1km')
+        
+        if not error:
+            lst_celsius = (value * 0.02) - 273.15
+            logger.info(f"✅ MODIS LST (daily): {lst_celsius:.2f}°C")
+            return {
+                'lst_celsius': round(lst_celsius, 2),
+                'count': count_daily,
+                'source': 'MODIS_daily',
+                'period': f"{date_start} to {date_end}"
+            }
     
+    # Fallback 2: ERA5 2m temperature
+    logger.warning(f"⚠️ MODIS LST недоступен, пробуем ERA5 t2m...")
+    era5_temp = get_era5_2m_temperature(lat, lon, date_start, date_end)
+    
+    if era5_temp is not None:
+        return {
+            'lst_celsius': era5_temp,
+            'count': 0,
+            'source': 'ERA5_t2m_proxy',
+            'period': f"{date_start} to {date_end}",
+            'note': 'ERA5 2m temperature as LST proxy'
+        }
+    
+    # All failed
+    logger.error(f"❌ Нет LST данных (MODIS + ERA5)")
     return {
-        'lst_celsius': round(lst_celsius, 2),
-        'count': count,
+        'lst_celsius': None,
+        'count': 0,
+        'source': 'unavailable',
+        'error': 'No LST from MODIS or ERA5',
         'period': f"{date_start} to {date_end}"
     }
 
@@ -369,14 +497,14 @@ def get_co_data(lat: float, lon: float, date_start: str, date_end: str):
 
 def get_ch4_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    CH4 из Sentinel-5P → fallback на исторические данные.
+    CH4 из Sentinel-5P → spatial average fallback → historical fallback.
     """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    # Пробуем реальные данные
+    # Attempt 1: Point data (original method)
     collection = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CH4") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
@@ -398,6 +526,18 @@ def get_ch4_data(lat: float, lon: float, date_start: str, date_end: str):
                 'unit': 'ppb',
                 'source': 'sentinel5p_real'
             }
+    
+    # Attempt 2: Spatial average fallback
+    logger.warning(f"⚠️ CH4 point data недоступен, пробуем spatial average...")
+    spatial_value, spatial_count = get_ch4_spatial_average(lat, lon, date_start, date_end, radius_km=50)
+    
+    if spatial_value is not None:
+        return {
+            'ch4': spatial_value,
+            'count': spatial_count,
+            'unit': 'ppb',
+            'source': 'sentinel5p_spatial_avg'
+        }
     
     # FALLBACK: Исторические данные
     logger.warning(f"⚠️ Реальные CH4 недоступны, использую исторические 2000-2023")
@@ -426,9 +566,10 @@ def get_all_gee_data(lat: float, lon: float, date_start: str, date_end: str):
     
     # Сводка
     real_count = sum(1 for v in results.values() if v.get('source', '').startswith('sentinel'))
+    proxy_count = sum(1 for v in results.values() if 'proxy' in v.get('source', ''))
     hist_count = sum(1 for v in results.values() if 'historical' in v.get('source', ''))
     
-    logger.info(f"✅ GEE данные: {real_count} реальных, {hist_count} исторических")
+    logger.info(f"✅ GEE данные: {real_count} реальных, {proxy_count} proxy, {hist_count} исторических")
     
     return results
 
