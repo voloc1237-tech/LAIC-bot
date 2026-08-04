@@ -289,7 +289,7 @@ def main():
                         clim_source = iono_result.get('climatology_source', 'unknown')
                         
                         if clim_years > 0:
-                            logger.info(f"   📊 Историческая база: {clim_years} лет ({climat_source})")
+                            logger.info(f"   📊 Историческая база: {clim_years} лет ({clim_source})")
                         
                         yoy = iono_result.get('year_over_year_change')
                         if yoy is not None:
