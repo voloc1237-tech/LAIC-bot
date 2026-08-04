@@ -299,10 +299,10 @@ def main():
             lon = row['longitude']
             event_time = row['time']
             
-            if TEST_MODE:
-                logger.debug(f"ℹ️ Событие {event_id}: заменяем дату с {event_time} на {current_time}")
-                event_time = current_time
-                strong_events.at[idx, 'time'] = current_time
+            #if TEST_MODE:
+                #logger.debug(f"ℹ️ Событие {event_id}: заменяем дату с {event_time} на {current_time}")
+                #event_time = current_time
+                #strong_events.at[idx, 'time'] = current_time
 
             mag = row['magnitude']
             
@@ -628,4 +628,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+main()
