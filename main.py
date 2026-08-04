@@ -41,7 +41,7 @@ ensure_directories()
 
 # GEE
 try:
-    from ee_collector import GEEInitializer, get_lst_data, #get_all_gee_data
+    from ee_collector import GEEInitializer, get_lst_data
     GEE_AVAILABLE = True
 except ImportError:
     GEE_AVAILABLE = False
