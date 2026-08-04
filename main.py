@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -67,10 +68,22 @@ try:
     WEATHER_AVAILABLE = True
 except ImportError: WEATHER_AVAILABLE = False
 
+# ═══════════════════════════════════════════════════════════════
+# НОВОЕ: Исторический анализ ионосферы (2000-2023)
+# ═══════════════════════════════════════════════════════════════
+try:
+    from ionosphere_historical import EnhancedIonosphereCollector, HistoricalIonosphereAnalyzer
+    IONO_HISTORICAL_AVAILABLE = True
+    logger.info("✅ Исторический анализ ионосферы доступен (2000-2023)")
+except ImportError:
+    IONO_HISTORICAL_AVAILABLE = False
+    logger.warning("⚠️ Исторический анализ ионосферы недоступен")
+
+# Fallback: старый сборщик
 try:
     from ionosphere_collector import IonosphereCollector
-    IONO_AVAILABLE = True
-except ImportError: IONO_AVAILABLE = False
+    IONO_LEGACY_AVAILABLE = True
+except ImportError: IONO_LEGACY_AVAILABLE = False
 
 try:
     from space_weather import SpaceWeatherCollector
@@ -83,18 +96,15 @@ def main():
     logger.info("🚀 LAIC EARTHQUAKE MONITOR")
     
     # ============================================================
-    # 🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: ОПРЕДЕЛЕНИЕ ДАТЫ ДО СБОРА ДАННЫХ
+    # ОПРЕДЕЛЕНИЕ ДАТЫ
     # ============================================================
     
-    # 1. Читаем TEST_MODE из переменных окружения
     test_mode_str = os.environ.get('TEST_MODE', 'false').lower()
     TEST_MODE = (test_mode_str == 'true')
     
     current_time = datetime.now(timezone.utc)
     
     if TEST_MODE:
-        # Если режим теста - жестко ставим дату 2023-01-15 12:00 UTC
-        # Это гарантирует, что файлы IONEX существуют на серверах NASA
         forced_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
         logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ АКТИВИРОВАН!")
         logger.warning(f"📅 Дата принудительно изменена на: {forced_date.isoformat()}")
@@ -133,10 +143,6 @@ def main():
 
     # ============================================================
     # ЭТАП 1: СБОР ДАННЫХ USGS
-    # Теперь мы передаем current_time (который может быть 2023 годом) в коллектор,
-    # если коллектор использует время для фильтрации. 
-    # Если collect_all_regions берет только "последние N дней", то дата не важна для запроса,
-    # но важна для последующих этапов (ионосфера).
     # ============================================================
     logger.info("\n" + "=" * 70)
     logger.info("📥 ЭТАП 1: Сбор данных USGS")
@@ -180,7 +186,6 @@ def main():
 
     # ============================================================
     # ЭТАП 1b: СБОР СПУТНИКОВЫХ ДАННЫХ (LST)
-    # Используем current_time для определения окна поиска, если нужно
     # ============================================================
     lst_cache = {}
     if ee_initialized:
@@ -194,7 +199,6 @@ def main():
                 lat = last_event['latitude']
                 lon = last_event['longitude']
                 
-                # Используем текущую (или тестовую) дату как центр окна
                 end_date = current_time.strftime('%Y-%m-%d')
                 start_date = (current_time - timedelta(days=7)).strftime('%Y-%m-%d')
                 
@@ -211,16 +215,7 @@ def main():
                     lst_cache[region_name] = None
 
     # ============================================================
-    # ЭТАП 1c: СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ (Погода, Ионосфера, Космос)
-    # ВАЖНО: Здесь мы используем current_time только если нет конкретных событий.
-    # Но для ионосферы мы берем время конкретного события (row['time']).
-    # В режиме TEST_MODE мы НЕ меняем даты событий здесь, мы полагаемся на то,
-    # что если нам нужны данные именно за дату события, а не за "сейчас",
-    # то логика внутри fetch_for_event должна работать корректно.
-    
-    # ОДНАКО: Если твой iono.fetch_for_event использует datetime.now() внутри себя,
-    # тебе нужно передать туда current_time явно. 
-    # Ниже я предполагаю, что fetch_for_event берет время из события.
+    # ЭТАП 1c: СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ
     # ============================================================
     min_mag_for_detail = settings.get('analysis', {}).get('detail_min_magnitude', 5.0)
     event_weather = {}
@@ -240,22 +235,31 @@ def main():
         logger.info("=" * 70)
 
         weather = WeatherCollector() if WEATHER_AVAILABLE else None
-        iono = IonosphereCollector() if IONO_AVAILABLE else None
+        
+        # ═══════════════════════════════════════════════════════════════
+        # НОВОЕ: Используем исторический анализатор если доступен
+        # ═══════════════════════════════════════════════════════════════
+        if IONO_HISTORICAL_AVAILABLE:
+            iono = EnhancedIonosphereCollector()
+            logger.info("✅ Используется исторический анализатор ионосферы (2000-2023)")
+        elif IONO_LEGACY_AVAILABLE:
+            iono = IonosphereCollector()
+            logger.info("ℹ️ Используется legacy сборщик ионосферы")
+        else:
+            iono = None
+            logger.warning("⚠️ Сборщик ионосферы недоступен")
+        
         space = SpaceWeatherCollector() if SPACE_AVAILABLE else None
 
         for idx, row in strong_events.iterrows():
             event_id = row['id']
             lat = row['latitude']
             lon = row['longitude']
-            event_time = row['time'] # Время события из USGS
+            event_time = row['time']
             
-            # ⚠️ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ДЛЯ ТЕСТОВОГО РЕЖИМА:
-            # Если включен TEST_MODE, мы заменяем время события на тестовое,
-            # чтобы fetch_for_event скачал реальные файлы 2023 года.
             if TEST_MODE:
                 logger.debug(f"ℹ️ Событие {event_id}: заменяем дату с {event_time} на {current_time}")
                 event_time = current_time
-                # Обновляем в DataFrame для последующих этапов
                 strong_events.at[idx, 'time'] = current_time
 
             mag = row['magnitude']
@@ -272,18 +276,39 @@ def main():
                     if not wdf.empty: event_weather[event_id] = wdf
                 except Exception as e: logger.warning(f"   ⚠️ Погода: {e}")
 
-            # Ионосфера
+            # ═══════════════════════════════════════════════════════════════
+            # НОВОЕ: Исторический анализ ионосферы
+            # ═══════════════════════════════════════════════════════════════
             if iono:
                 try:
-                    # Теперь здесь будет дата 2023-01-15, если TEST_MODE=true
                     iono_result = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
                     
+                    # Дополнительная информация от исторического анализатора
+                    if IONO_HISTORICAL_AVAILABLE and isinstance(iono_result, dict):
+                        clim_years = iono_result.get('n_historical_years', 0)
+                        clim_source = iono_result.get('climatology_source', 'unknown')
+                        
+                        if clim_years > 0:
+                            logger.info(f"   📊 Историческая база: {clim_years} лет ({climat_source})")
+                        
+                        yoy = iono_result.get('year_over_year_change')
+                        if yoy is not None:
+                            logger.info(f"   📈 Изменение к прошлому году: {yoy:+.1f}%")
+                    
+                    # Анализ аномалий
                     if iono_result.get('is_anomaly', False):
-                        logger.critical(f"   🔴🔴🔴 ИОНОСФЕРНАЯ АНОМАЛИЯ: {iono_result.get('details', '')}")
+                        level = iono_result.get('level', 'unknown')
+                        if level == 'critical':
+                            logger.critical(f"   🔴🔴🔴 КРИТИЧЕСКАЯ ИОНОСФЕРНАЯ АНОМАЛИЯ: {iono_result.get('details', '')}")
+                        elif level == 'high':
+                            logger.warning(f"   🟠🟠 ВЫСОКАЯ АНОМАЛИЯ: {iono_result.get('details', '')}")
+                        else:
+                            logger.info(f"   🟡 Умеренная аномалия: {iono_result.get('details', '')}")
                     else:
                         logger.info(f"   ✅ Ионосфера: {iono_result.get('details', 'В норме')}")
                     
                     event_iono[event_id] = iono_result
+                    
                 except Exception as e:
                     logger.warning(f"   ⚠️ Ионосфера: {e}")
 
@@ -302,11 +327,8 @@ def main():
     else:
         logger.info("ℹ️ Нет сильных событий для детального сбора.")
 
-    # ============================================================
-    # ЭТАПЫ 1d, 1e, 2, 3, 4: ИИ, Прогноз, LAIC, Отчеты
-    # (Оставлено без изменений, кроме импортов в начале, чтобы не дублировать)
-    # ============================================================
-
+    # ... остальной код остаётся без изменений ...
+    # (Этапы 1d, 1e, 2, 3, 4 — ИИ, Прогноз, LAIC, Отчёты)
     
     # ═══════════════════════════════════════════════════════════════
     # 1d. ИИ-АНАЛИЗ АНОМАЛИЙ
@@ -334,10 +356,12 @@ def main():
                 if lst_data and isinstance(lst_data, dict):
                     lst_celsius = lst_data.get('lst_celsius', 0)
                 
-                # Добавляем данные ионосферы, если есть
                 event_id = row.get('id', f'event_{idx}')
                 iono_info = event_iono.get(event_id, {})
                 
+                # ═══════════════════════════════════════════════════════════════
+                # НОВОЕ: Добавляем исторические данные в ИИ-анализ
+                # ═══════════════════════════════════════════════════════════════
                 event_data = {
                     'id': event_id,
                     'region': region_name,
@@ -355,7 +379,11 @@ def main():
                         'std': row.get('kp_std', 0)
                     },
                     'iono_anomaly': iono_info.get('is_anomaly', False),
-                    'z_score_max': iono_info.get('z_score_max', 0.0)
+                    'z_score_max': iono_info.get('z_score_max', 0.0),
+                    'z_score_min': iono_info.get('z_score_min', 0.0),
+                    'iono_level': iono_info.get('level', 'normal'),
+                    'historical_years': iono_info.get('n_historical_years', 0),
+                    'yoy_change': iono_info.get('year_over_year_change', 0.0)
                 }
                 events_for_ai.append(event_data)
         
@@ -385,6 +413,7 @@ def main():
     else:
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
 
+    # ... остальные этапы (1e, 2, 3, 4) остаются без изменений ...
     # ═══════════════════════════════════════════════════════════════
     # 1e. ПРОГНОЗИРОВАНИЕ (LSTM)
     # ═══════════════════════════════════════════════════════════════
@@ -460,7 +489,7 @@ def main():
             logger.info(f"ℹ️ Прогнозирование пропущено (нужно ≥20 событий, собрано {len(df_train)})")
     else:
         logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")
-
+        
     # ═══════════════════════════════════════════════════════════════
     # 2. АНАЛИЗ LAIC
     # ═══════════════════════════════════════════════════════════════
@@ -488,17 +517,16 @@ def main():
                 logger.error("❌ Не удалось отправить отчёт")
         except Exception as e:
             logger.error(f"❌ Ошибка отправки отчёта: {e}")
-
+    
+        # Алерты для критических
         alerts_sent = 0
         for r in results:
-            if r.get('alert'):
+            if r.get('alert', False):
                 try:
                     alert_sync(r)
                     alerts_sent += 1
                 except Exception as e:
                     logger.error(f"❌ Ошибка алерта {r.get('region', 'unknown')}: {e}")
-    else:
-        logger.warning("⚠️ Модуль Telegram не доступен, отчёт не отправлен")
 
     # ═══════════════════════════════════════════════════════════════
     # 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
@@ -538,22 +566,21 @@ def main():
         logger.info("ℹ️ Визуализация пропущена (visualizer.py не найден)")
     elif not TG_AVAILABLE:
         logger.info("ℹ️ Визуализация пропущена (Telegram модуль не доступен)")
-
+        
     # ═══════════════════════════════════════════════════════════════
     # ИТОГ
     # ═══════════════════════════════════════════════════════════════
     critical = sum(1 for r in results if r.get('risk_level') == 'critical')
     high = sum(1 for r in results if r.get('risk_level') == 'high')
-
+    
     logger.info("\n" + "=" * 70)
     logger.info("✅ АНАЛИЗ ЗАВЕРШЁН")
     logger.info(f"   Регионов: {len(results)}")
     logger.info(f"   🔴 Критических: {critical}")
     logger.info(f"   🟠 Высоких: {high}")
-    if TG_AVAILABLE:
-        logger.info(f"   🚨 Алертов отправлено: {alerts_sent if 'alerts_sent' in locals() else 0}")
+    logger.info(f"   🚨 Алертов отправлено: {alerts_sent}")
     logger.info("=" * 70)
-
+    
     if critical > 0:
         sys.exit(0)
 
