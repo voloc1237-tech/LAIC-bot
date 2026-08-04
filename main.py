@@ -109,10 +109,10 @@ def main():
         #logger.warning("🛠️ ОТЛАДОЧНЫЙ РЕЖИМ АКТИВИРОВАН!")
         #logger.warning(f"📅 Дата принудительно изменена на: {forced_date.isoformat()}")
         #current_time = forced_date
-    else:
-        logger.info(f"⏰ Реальный режим: текущая дата {current_time.isoformat()}")
+    #else:
+        #logger.info(f"⏰ Реальный режим: текущая дата {current_time.isoformat()}")
 
-    logger.info("=" * 70)
+    #logger.info("=" * 70)
 
     # Проверка токенов
     token = os.environ.get('TELEGRAM_BOT_TOKEN')
