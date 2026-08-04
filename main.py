@@ -98,7 +98,10 @@ def main():
     # ============================================================
     # ОПРЕДЕЛЕНИЕ ДАТЫ
     # ============================================================
-    
+    current_time = datetime.now(timezone.utc)
+    logger.info(f"⏰ Текущая дата: {current_time.isoformat()}")
+    logger.info("=" * 70)
+
     #test_mode_str = os.environ.get('TEST_MODE', 'false').lower()
     #TEST_MODE = (test_mode_str == 'true')
     
