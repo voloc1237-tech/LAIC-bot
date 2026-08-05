@@ -17,6 +17,8 @@ from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegress
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
 import joblib
 
 logger = logging.getLogger(__name__)
@@ -283,6 +285,10 @@ class EarthquakePredictor:
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
         
+        self.preprocessor = Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ])
         self.probability_model = None
         self.magnitude_model = None
         self.time_model = None
@@ -317,7 +323,7 @@ class EarthquakePredictor:
         joblib.dump(self.lon_model, f"{self.model_dir}/lon_model.pkl")
         joblib.dump(self.scaler, f"{self.model_dir}/scaler.pkl")
         logger.info("💾 Модели сохранены")
-    
+
     def prepare_training_data(
         self,
         events_df: pd.DataFrame,
@@ -334,25 +340,58 @@ class EarthquakePredictor:
         y_time = []
         y_lat = []
         y_lon = []
-        
+    
         significant_events = events_df[events_df['magnitude'] >= 5.0].copy()
-        
+    
         logger.info(f"📊 Подготовка данных: {len(significant_events)} событий")
-        
+    
+        # ✅ ИСПРАВЛЕНО: Создаём коллекторы для загрузки данных на произвольную дату
+        try:
+            from space_weather import SpaceWeatherCollector
+            from ionosphere_collector import IonosphereCollector
+            space_collector = SpaceWeatherCollector()
+            iono_collector = IonosphereCollector()
+            collectors_available = True
+            logger.info("✅ Коллекторы данных загружены для обучения")
+        except ImportError as e:
+            collectors_available = False
+            logger.warning(f"⚠️ Коллекторы недоступны: {e}")
+    
         for _, event in significant_events.iterrows():
             event_time = event['time']
             lat = event['latitude']
             lon = event['longitude']
-            
+        
             region_name = self._get_region_for_point(lat, lon, region_data_dict)
             region_df = region_data_dict.get(region_name, pd.DataFrame())
-            
+        
             for days_before in CONFIG.DAYS_BEFORE_FEATURES:
                 sample_time = event_time - timedelta(days=days_before)
-                
+            
                 if sample_time > datetime.now(timezone.utc):
                     continue
+            
+                # ✅ ИСПРАВЛЕНО: Загружаем данные на момент sample_time
+                space_data_for_sample = None
+                iono_data_for_sample = None            
+                if collectors_available:
+                    # Космическая погода за 10 дней до sample_time
+                    try:
+                        start_space = sample_time - timedelta(days=10)
+                        space_data_for_sample = space_collector.fetch_all_for_period(start_space, sample_time)
+                    except Exception as e:
+                        logger.debug(f"⚠️ Space weather error: {e}")
                 
+                    # Ионосфера на момент sample_time
+                    try:
+                        iono_data_for_sample = iono_collector.fetch_for_event(
+                            event_time=sample_time,
+                            lat=lat, lon=lon,
+                            days_before=7, days_after=0
+                        )
+                    except Exception as e:
+                        logger.debug(f"⚠️ Ionosphere error: {e}")
+            
                 try:
                     features = LAICFeatureExtractor.extract_features(
                         lat=lat,
@@ -360,36 +399,36 @@ class EarthquakePredictor:
                         event_time=sample_time,
                         region_data=region_df,
                         lst_data=lst_cache.get(region_name),
-                        iono_data=iono_cache.get(event.get('id')),
-                        space_data=space_cache.get(event.get('id')),
+                        iono_data=iono_data_for_sample,  # ✅ ИЗМЕНЕНО
+                        space_data=space_data_for_sample,  # ✅ ИЗМЕНЕНО
                         weather_data=weather_cache.get(event.get('id'))
                     )
-                    
+                
                     X.append(features)
                     y_prob.append(1 if event['magnitude'] >= CONFIG.MAGNITUDE_THRESHOLD else 0)
                     y_mag.append(event['magnitude'])
                     y_time.append(days_before)
                     y_lat.append(lat)
                     y_lon.append(lon)
-                    
+                
                 except Exception as e:
                     logger.debug(f"⚠️ Ошибка извлечения признаков для {event.get('id')}: {e}")
                     continue
-        
+    
         if len(X) == 0:
             logger.warning("⚠️ Нет данных для обучения")
             return np.array([]), {}
-        
+    
         X = np.array(X)
-        X_scaled = self.scaler.fit_transform(X)
-        
-        return X_scaled, {
-            'probability': np.array(y_prob),
+        #X_scaled = self.scaler.fit_transform(X)
+        X_scaled = self.preprocessor.fit_transform(X)
+        return X_scaled, {        'probability': np.array(y_prob),
             'magnitude': np.array(y_mag),
             'time': np.array(y_time),
             'lat': np.array(y_lat),
             'lon': np.array(y_lon)
-        }
+         }
+    
     
     def train(self, X: np.ndarray, y: Dict[str, np.ndarray]) -> bool:
         """Обучение моделей."""
@@ -492,8 +531,9 @@ class EarthquakePredictor:
             space_data=space_data
         )
         
-        X = self.scaler.transform(features.reshape(1, -1))
-        
+        #X = self.scaler.transform(features.reshape(1, -1))
+        X = self.preprocessor.transform(features.reshape(1, -1))
+       
         prob = self.probability_model.predict_proba(X)[0][1]
         mag = self.magnitude_model.predict(X)[0]
         days = self.time_model.predict(X)[0]
@@ -530,47 +570,81 @@ class EarthquakePredictor:
         if not self.is_trained:
             logger.warning("⚠️ Модели не обучены!")
             return pd.DataFrame()
-        
+    
         resolution = resolution or CONFIG.GRID_RESOLUTION
-        
+    
         lats = np.arange(region_bounds['lat_min'], region_bounds['lat_max'], resolution)
         lons = np.arange(region_bounds['lon_min'], region_bounds['lon_max'], resolution)
-        
+    
         predictions = []
         total = len(lats) * len(lons)
         logger.info(f"🔮 Прогноз по сетке: {len(lats)}×{len(lons)} = {total} точек")
-        
+    
+        # ✅ ИСПРАВЛЕНО: Создаём коллекторы для загрузки свежих данных
+        try:
+            from space_weather import SpaceWeatherCollector
+            from ionosphere_collector import IonosphereCollector
+            space_collector = SpaceWeatherCollector()
+            iono_collector = IonosphereCollector()
+            collectors_available = True
+            logger.info("✅ Коллекторы данных загружены для прогноза")
+        except ImportError as e:
+            collectors_available = False
+            logger.warning(f"⚠️ Коллекторы недоступны: {e}")
+    
+        # Кэшируем данные космической погоды (она одинакова для всех точек)
+        current_space_data = None
+        if collectors_available:
+            try:
+                start_space = current_time - timedelta(days=10)
+                current_space_data = space_collector.fetch_all_for_period(start_space, current_time)
+                logger.info(f"✅ Космическая погода загружена для прогноза")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка загрузки космической погоды: {e}")
+    
         for i, lat in enumerate(lats):
             for lon in lons:
                 region_name = self._get_region_for_point(lat, lon, region_data_dict)
                 region_df = region_data_dict.get(region_name)
-                
-                # ✅ ИСПРАВЛЕНО: проверка на None
+            
                 if region_df is None:
                     region_df = pd.DataFrame()
-                
+            
+                # ✅ ИСПРАВЛЕНО: Загружаем ионосферу для каждой точки
+                current_iono_data = None
+                if collectors_available:
+                    try:
+                        current_iono_data = iono_collector.fetch_for_event(
+                            event_time=current_time,
+                            lat=lat, lon=lon,
+                            days_before=7, days_after=0
+                        )
+                    except Exception as e:
+                        logger.debug(f"⚠️ Ionosphere error for ({lat:.2f}, {lon:.2f}): {e}")
+            
                 pred = self.predict(
                     lat=lat,
                     lon=lon,
                     current_time=current_time,
                     region_df=region_df,
                     lst_data=lst_cache.get(region_name) if lst_cache else None,
-                    iono_data=None,
-                    space_data=None
+                    iono_data=current_iono_data,  # ✅ ИСПРАВЛЕНО: передаём данные
+                    space_data=current_space_data  # ✅ ИСПРАВЛЕНО: передаём данные
                 )
-                
+            
                 if pred['probability_m6'] >= CONFIG.PROBABILITY_THRESHOLD:
                     predictions.append(pred)
-            
+        
             if (i + 1) % 10 == 0:
                 logger.info(f"  Обработано: {(i+1) * len(lons)}/{total}")
-        
+    
         df = pd.DataFrame(predictions)
         if not df.empty:
             df = df.sort_values('probability_m6', ascending=False)
-        
+    
         logger.info(f"✅ Прогноз готов: {len(df)} точек с вероятностью ≥{CONFIG.PROBABILITY_THRESHOLD}")
         return df
+    
     
     def _get_region_for_point(self, lat: float, lon: float, region_data_dict: Dict) -> str:
         """Определение ближайшего региона."""
