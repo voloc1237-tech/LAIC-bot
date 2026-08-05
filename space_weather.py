@@ -9,8 +9,11 @@ import logging
 import requests
 import pandas as pd
 import numpy as np
-import logging
 from datetime import datetime, timedelta, timezone
+
+# Подавление шумных логов HTTP
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +25,14 @@ SWPC_DST_URL = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
 SWPC_KP_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 SWPC_F107_URL = "https://services.swpc.noaa.gov/products/10cm-flux-30-day.json"
 
-# Лимит свежих данных (дней) — КОРРЕКТИРОВКА по реальным данным
-SWPC_DST_DAYS = 30      # Dst ~30 дней
-SWPC_KP_DAYS = 7        # Kp только ~7 дней!
-SWPC_F107_DAYS = 30     # F10.7 ~30 дней
+# Лимит свежих данных (дней)
+SWPC_DST_DAYS = 30
+SWPC_KP_DAYS = 7
+SWPC_F107_DAYS = 30
 
 
 # ═══════════════════════════════════════════════════════════════
-# ПАРСЕРЫ (ИСПРАВЛЕННЫЕ)
+# ПАРСЕРЫ
 # ═══════════════════════════════════════════════════════════════
 
 def _parse_swpc_dst(data: list) -> pd.DataFrame:
@@ -53,10 +56,7 @@ def _parse_swpc_dst(data: list) -> pd.DataFrame:
 
 
 def _parse_swpc_kp(data: list) -> pd.DataFrame:
-    """
-    Парсинг Kp из SWPC.
-    ✅ ИСПРАВЛЕНО: ключ 'Kp' с большой буквы!
-    """
+    """Парсинг Kp из SWPC."""
     if not isinstance(data, list):
         return pd.DataFrame()
     
@@ -64,7 +64,6 @@ def _parse_swpc_kp(data: list) -> pd.DataFrame:
     for item in data:
         try:
             time_str = item.get('time_tag')
-            # ✅ Ключ 'Kp' с большой буквы, 'kp' с маленькой, 'kp_index', 'estimated_kp'
             kp_val = item.get('Kp') or item.get('kp') or item.get('kp_index') or item.get('estimated_kp')
             
             if time_str and kp_val is not None:
@@ -141,16 +140,17 @@ class SpaceWeatherCollector:
     
     def __init__(self):
         self.historical = HistoricalSpaceWeather()
-        logger.info("🛰️ SpaceWeatherCollector инициализирован")
+        # ✅ ТИХО: убираем лог инициализации
+        # logger.info("🛰️ SpaceWeatherCollector инициализирован")
     
     def _is_recent(self, target_date: datetime, days_limit: int) -> bool:
-        """Проверка, что дата в пределах лимита дней."""
         days_diff = (datetime.now(timezone.utc) - target_date).days
         return days_diff <= days_limit
     
     def fetch_dst(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Dst: SWPC (~30 дней) → исторические."""
-        logger.info(f"🧲 Загрузка Dst: {start_time.date()} — {end_time.date()}")
+        # ✅ ТИХО: убираем лог начала
+        # logger.info(f"🧲 Загрузка Dst: {start_time.date()} — {end_time.date()}")
         
         if self._is_recent(end_time, SWPC_DST_DAYS):
             try:
@@ -164,17 +164,15 @@ class SpaceWeatherCollector:
                     if start_time <= data_end and end_time >= data_start:
                         df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
                         if len(df) > 0:
-                            logger.info(f"✅ Dst (SWPC): {len(df)} записей")
+                            # ✅ ТИХО: убираем успешный лог
+                            # logger.info(f"✅ Dst (SWPC): {len(df)} записей")
                             return df
-                    else:
-                        logger.info(f"📅 Dst диапазон {data_start.date()}—{data_end.date()} не покрывает запрос")
             except Exception as e:
-                logger.warning(f"⚠️ SWPC Dst: {e}")
-        else:
-            logger.info(f"📅 Дата старше {SWPC_DST_DAYS}д, SWPC Dst недоступен")
+                # ✅ ТИХО: только ошибки
+                # logger.warning(f"⚠️ SWPC Dst: {e}")
+                pass
         
-        # Fallback
-        logger.warning("⚠️ Исторические Dst")
+        # Fallback — без логов
         records = []
         current = start_time.replace(minute=0, second=0, microsecond=0)
         while current <= end_time:
@@ -184,9 +182,6 @@ class SpaceWeatherCollector:
     
     def fetch_kp(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Kp: SWPC (~7 дней!) → исторические."""
-        logger.info(f"☀️ Загрузка Kp: {start_time.date()} — {end_time.date()}")
-        
-        # ✅ Kp хранит только ~7 дней!
         if self._is_recent(end_time, SWPC_KP_DAYS):
             try:
                 r = requests.get(SWPC_KP_URL, timeout=30)
@@ -195,7 +190,6 @@ class SpaceWeatherCollector:
                 if not df.empty:
                     data_start = df['time'].min()
                     data_end = df['time'].max()
-                    logger.info(f"📊 Kp данные SWPC: {data_start.date()} — {data_end.date()}")
                     
                     if start_time <= data_end and end_time >= data_start:
                         df = df[
@@ -203,19 +197,11 @@ class SpaceWeatherCollector:
                             (df['time'] <= end_time + timedelta(days=1))
                         ]
                         if len(df) > 0:
-                            logger.info(f"✅ Kp (SWPC): {len(df)} записей")
                             return df
-                        else:
-                            logger.warning(f"⚠️ Kp в диапазоне не найдено после фильтра")
-                    else:
-                        logger.info(f"📅 Kp диапазон {data_start.date()}—{data_end.date()} не покрывает запрос {start_time.date()}—{end_time.date()}")
-            except Exception as e:
-                logger.warning(f"⚠️ SWPC Kp: {e}")
-        else:
-            logger.info(f"📅 Дата старше {SWPC_KP_DAYS}д, SWPC Kp недоступен")
+            except Exception:
+                pass
         
         # Fallback
-        logger.warning("⚠️ Исторические Kp")
         records = []
         current = start_time.replace(minute=0, second=0, microsecond=0)
         current = current.replace(hour=(current.hour // 3) * 3)
@@ -226,8 +212,6 @@ class SpaceWeatherCollector:
     
     def fetch_f107(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """F10.7: SWPC (~30 дней) → исторические."""
-        logger.info(f"☀️ Загрузка F10.7: {start_time.date()} — {end_time.date()}")
-        
         if self._is_recent(end_time, SWPC_F107_DAYS):
             try:
                 r = requests.get(SWPC_F107_URL, timeout=30)
@@ -240,17 +224,11 @@ class SpaceWeatherCollector:
                     if start_time <= data_end and end_time >= data_start:
                         df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
                         if len(df) > 0:
-                            logger.info(f"✅ F10.7 (SWPC): {len(df)} записей")
                             return df
-                    else:
-                        logger.info(f"📅 F10.7 диапазон не покрывает запрос")
-            except Exception as e:
-                logger.warning(f"⚠️ SWPC F10.7: {e}")
-        else:
-            logger.info(f"📅 Дата старше {SWPC_F107_DAYS}д, SWPC F10.7 недоступен")
+            except Exception:
+                pass
         
         # Fallback
-        logger.warning("⚠️ Исторические F10.7")
         records = []
         current = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
         while current <= end_time:
