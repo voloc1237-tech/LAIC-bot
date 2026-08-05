@@ -18,13 +18,21 @@ from aftershock_filter import filter_aftershocks
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
 # ═══════════════════════════════════════════════════════════════
+# В самом начале main.py, после импортов:
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('LAIC')
-
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+logging.getLogger("tensorflow").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)      # если используется
+logging.getLogger("folium").setLevel(logging.WARNING)        # если шумит
 # ═══════════════════════════════════════════════════════════════
 # СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
 # ═══════════════════════════════════════════════════════════════
