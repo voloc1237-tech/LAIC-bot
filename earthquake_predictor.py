@@ -463,7 +463,7 @@ class EarthquakePredictor:
         
         return True
     
-     def predict(
+    def predict(
         self,
         lat: float,
         lon: float,
