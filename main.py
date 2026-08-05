@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -18,8 +17,6 @@ from aftershock_filter import filter_aftershocks
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
 # ═══════════════════════════════════════════════════════════════
-# В самом начале main.py, после импортов:
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -31,14 +28,11 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("tensorflow").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING)      # если используется
-logging.getLogger("folium").setLevel(logging.WARNING)        # если шумит
-
-# 🔥 ДОБАВИТЬ: Подавление sklearn и numpy предупреждений
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+logging.getLogger("folium").setLevel(logging.WARNING)
 logging.getLogger("sklearn").setLevel(logging.ERROR)
 logging.getLogger("numpy").setLevel(logging.ERROR)
 
-logger = logging.getLogger('LAIC')
 # ═══════════════════════════════════════════════════════════════
 # СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
 # ═══════════════════════════════════════════════════════════════
@@ -50,23 +44,30 @@ def ensure_directories():
 ensure_directories()
 
 # ═══════════════════════════════════════════════════════════════
-# ИМПОРТЫ МОДУЛЕЙ
+# ИМПОРТЫ МОДУЛЕЙ (с проверкой наличия)
 # ═══════════════════════════════════════════════════════════════
 
 # GEE
 try:
-    from ee_collector import GEEInitializer, get_lst_data,  get_all_gee_data
+    from ee_collector import GEEInitializer, get_lst_data, get_all_gee_data
     GEE_AVAILABLE = True
 except ImportError:
     GEE_AVAILABLE = False
     logger.warning("⚠️ Earth Engine модуль не найден")
 
-# Визуализация
+# Визуализация (РАСШИРЕННАЯ)
 try:
-    from visualizer import plot_magnitude_series, create_interactive_report
+    from visualizer import (
+        plot_magnitude_series,
+        create_interactive_report,
+        create_anomaly_plot,
+        create_iono_anomaly_plot,
+        create_solar_activity_plot
+    )
     VISUALIZER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     VISUALIZER_AVAILABLE = False
+    logger.warning(f"⚠️ Модуль визуализации не найден: {e}")
 
 # Телеграм
 try:
@@ -76,11 +77,46 @@ except ImportError:
     TG_AVAILABLE = False
     logger.warning("⚠️ Модуль Telegram не найден")
 
-# Данные
+# Погода
 try:
     from weather_collector import WeatherCollector
     WEATHER_AVAILABLE = True
-except ImportError: WEATHER_AVAILABLE = False
+except ImportError:
+    WEATHER_AVAILABLE = False
+    logger.warning("⚠️ WeatherCollector не доступен")
+
+# Ионосфера
+try:
+    from ionosphere_collector import IonosphereCollector
+    IONO_AVAILABLE = True
+except ImportError:
+    IONO_AVAILABLE = False
+    logger.warning("⚠️ IonosphereCollector не доступен")
+
+# Космическая погода
+try:
+    from space_weather import SpaceWeatherCollector
+    SPACE_AVAILABLE = True
+except ImportError:
+    SPACE_AVAILABLE = False
+    logger.warning("⚠️ SpaceWeatherCollector не доступен")
+
+# ИИ-анализ аномалий
+try:
+    from anomaly_detector import AnomalyDetector
+    ANOMALY_AVAILABLE = True
+except ImportError:
+    ANOMALY_AVAILABLE = False
+    logger.warning("⚠️ AnomalyDetector не доступен")
+
+# Прогнозирование (LSTM + GradientBoosting)
+try:
+    from predictor import EarthquakePredictor
+    PREDICTOR_AVAILABLE = True
+except ImportError:
+    PREDICTOR_AVAILABLE = False
+    logger.warning("⚠️ EarthquakePredictor не доступен")
+
 
 # ═══════════════════════════════════════════════════════════════
 # НОВОЕ: Исторический анализ ионосферы (2000-2023)
@@ -728,44 +764,135 @@ def main():
                 except Exception as e:
                     logger.error(f"❌ Ошибка алерта {r.get('region', 'unknown')}: {e}")
 
-    # ═══════════════════════════════════════════════════════════════
-    # 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
-    # ═══════════════════════════════════════════════════════════════
-    if VISUALIZER_AVAILABLE and TG_AVAILABLE and chat_id:
-        logger.info("\n" + "=" * 70)
-        logger.info("🎨 ЭТАП 4: Визуализация данных")
-        logger.info("=" * 70)
+# ═══════════════════════════════════════════════════════════════
+# 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
+# ═══════════════════════════════════════════════════════════════
+if VISUALIZER_AVAILABLE and TG_AVAILABLE and chat_id:
+    logger.info("\n" + "=" * 70)
+    logger.info("🎨 ЭТАП 4: Визуализация данных")
+    logger.info("=" * 70)
 
-        period_days = settings.get('analysis', {}).get('history_days', 30)
+    period_days = settings.get('analysis', {}).get('history_days', 30)
 
-        for region_name, df in data.items():
-            if not isinstance(df, pd.DataFrame) or df.empty:
-                continue
+    for region_name, df in data.items():
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
 
-            lst_info = lst_cache.get(region_name)
+        lst_info = lst_cache.get(region_name)
 
+        # ============================================================
+        # 4a. ОСНОВНОЙ PNG-ГРАФИК (временной ряд + гистограмма)
+        # ============================================================
+        try:
+            img_bytes = plot_magnitude_series(df, region_name)
+            if img_bytes:
+                caption = f"📊 {region_name} – временной ряд магнитуд (последние {period_days} дней)"
+                send_photo(chat_id, img_bytes, caption)
+                logger.info(f"✅ PNG-график для {region_name} отправлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации PNG для {region_name}: {e}")
+
+        # ============================================================
+        # 4b. ГРАФИК АНОМАЛИЙ (если есть данные от ИИ)
+        # ============================================================
+        if 'anomaly_df' in locals() and anomaly_df is not None and not anomaly_df.empty:
             try:
-                img_bytes = plot_magnitude_series(df, region_name)
+                region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
+                if not region_anomalies.empty and len(region_anomalies) > 1:
+                    img_bytes = create_anomaly_plot(region_anomalies, region_name)
+                    if img_bytes:
+                        send_photo(chat_id, img_bytes, 
+                                  caption=f"🧠 ИИ-анализ аномалий — {region_name}")
+                        logger.info(f"✅ График аномалий для {region_name} отправлен")
+            except Exception as e:
+                logger.error(f"❌ Ошибка генерации графика аномалий для {region_name}: {e}")
+
+        # ============================================================
+        # 4c. ГРАФИК ИОНОСФЕРЫ (если есть данные)
+        # ============================================================
+        # Ищем ионосферные данные для событий в этом регионе
+        region_iono = None
+        for event_id, iono_result in event_iono.items():
+            # Проверяем, принадлежит ли событие этому региону
+            event_row = all_events[all_events['id'] == event_id]
+            if not event_row.empty:
+                evt_region = event_row.iloc[0].get('region_name', 'global')
+                if evt_region == region_name:
+                    region_iono = iono_result
+                    break
+        
+        if region_iono and isinstance(region_iono, dict) and 'tec' in region_iono:
+            try:
+                img_bytes = create_iono_anomaly_plot(region_iono, region_name)
                 if img_bytes:
-                    caption = f"📊 {region_name} – временной ряд магнитуд (последние {period_days} дней)"
-                    send_photo(chat_id, img_bytes, caption)
-                    logger.info(f"✅ PNG-график для {region_name} отправлен")
+                    send_photo(chat_id, img_bytes, 
+                              caption=f"🛰️ Ионосферная аномалия — {region_name}")
+                    logger.info(f"✅ График ионосферы для {region_name} отправлен")
             except Exception as e:
-                logger.error(f"❌ Ошибка генерации PNG для {region_name}: {e}")
+                logger.error(f"❌ Ошибка генерации графика ионосферы для {region_name}: {e}")
 
+        # ============================================================
+        # 4d. ГРАФИК СОЛНЕЧНОЙ АКТИВНОСТИ (если есть данные)
+        # ============================================================
+        # Ищем космическую погоду для событий в этом регионе
+        region_space = None
+        region_mag = 0
+        for event_id, space_result in event_space.items():
+            event_row = all_events[all_events['id'] == event_id]
+            if not event_row.empty:
+                evt_region = event_row.iloc[0].get('region_name', 'global')
+                if evt_region == region_name:
+                    region_space = space_result
+                    region_mag = event_row.iloc[0].get('magnitude', 0)
+                    break
+        
+        if region_space and isinstance(region_space, dict):
             try:
-                html_path = create_interactive_report(region_name, df, lst_info, period_days=period_days)
-                if html_path:
-                    caption = f"📄 {region_name} – интерактивный отчёт"
-                    send_document(chat_id, html_path, caption)
-                    logger.info(f"✅ HTML-отчёт для {region_name} отправлен")
+                # Добавляем время события для вертикальной линии
+                if 'event_time' not in region_space:
+                    # Находим время события
+                    evt_time = None
+                    for event_id in event_space.keys():
+                        evt_row = all_events[all_events['id'] == event_id]
+                        if not evt_row.empty:
+                            evt_time = evt_row.iloc[0].get('time')
+                            break
+                    if evt_time:
+                        region_space['event_time'] = evt_time
+                
+                img_bytes = create_solar_activity_plot(region_space, region_name, region_mag)
+                if img_bytes:
+                    send_photo(chat_id, img_bytes, 
+                              caption=f"☀️ Солнечная активность — {region_name}")
+                    logger.info(f"✅ График солнечной активности для {region_name} отправлен")
             except Exception as e:
-                logger.error(f"❌ Ошибка генерации HTML для {region_name}: {e}")
+                logger.error(f"❌ Ошибка генерации графика солнечной активности для {region_name}: {e}")
 
-    elif not VISUALIZER_AVAILABLE:
-        logger.info("ℹ️ Визуализация пропущена (visualizer.py не найден)")
-    elif not TG_AVAILABLE:
-        logger.info("ℹ️ Визуализация пропущена (Telegram модуль не доступен)")
+        # ============================================================
+        # 4e. ИНТЕРАКТИВНЫЙ HTML-ОТЧЁТ (со всеми данными)
+        # ============================================================
+        try:
+            # Собираем все данные для отчёта
+            html_path = create_interactive_report(
+                region_name=region_name,
+                df=df,
+                lst_data=lst_info,
+                period_days=period_days,
+                iono_data=region_iono,          # ионосфера
+                space_data=region_space,        # космическая погода
+                anomaly_data=anomaly_df if 'anomaly_df' in locals() else None  # ИИ-аномалии
+            )
+            if html_path:
+                caption = f"📄 {region_name} – интерактивный отчёт (2D/3D карты, графики)"
+                send_document(chat_id, html_path, caption)
+                logger.info(f"✅ HTML-отчёт для {region_name} отправлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации HTML для {region_name}: {e}")
+
+elif not VISUALIZER_AVAILABLE:
+    logger.info("ℹ️ Визуализация пропущена (visualizer.py не найден)")
+elif not TG_AVAILABLE:
+    logger.info("ℹ️ Визуализация пропущена (Telegram модуль не доступен)")
         
     # ═══════════════════════════════════════════════════════════════
     # ИТОГ
