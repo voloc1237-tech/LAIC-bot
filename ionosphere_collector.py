@@ -47,7 +47,8 @@ class IonosphereCollector:
             f"{year}{doy:03d}0000"
             "_01D_01H_GIM.INX.gz"
         )
-        short_name = f"codg{doy:03d}0.{yy:02d}i.Z"        return [
+        short_name = f"codg{doy:03d}0.{yy:02d}i.Z"  # FIX: перевод строки
+        return [
             f"https://files.igs.org/pub/product/ionex/{year}/{doy:03d}/{long_name}",
             f"https://ftp.aiub.unibe.ch/CODE/{year}/{short_name}",
             f"{self.CDDIS_BASE}/{year}/{doy:03d}/{long_name}",
@@ -96,7 +97,8 @@ class IonosphereCollector:
         return None
 
     def _parse_ionex_file(self, filepath, lat, lon, date):
-        """        ✅ Корректный парсер IONEX.
+        """
+        ✅ Корректный парсер IONEX.
         В IONEX числа идут ВЫШЕ строки-подписи,
         поэтому запоминаем числа в pending и
         применяем их, когда видим подпись.
@@ -145,7 +147,8 @@ class IonosphereCollector:
                 continue
 
             parts = line.split()
-            if not parts:                continue
+            if not parts:                      # FIX: отступы
+                continue
 
             # Строка-подпись (содержит буквы)
             if any(c.isalpha() for c in line):
@@ -243,7 +246,8 @@ class IonosphereCollector:
                 df = self._parse_ionex_file(
                     filepath, lat, lon, current_date
                 )
-                if not df.empty:                    parsed_ok += 1
+                if not df.empty:              # FIX: отступы
+                    parsed_ok += 1
                     all_dfs.append(df)
             current_date += timedelta(days=1)
 
@@ -341,7 +345,8 @@ class IonosphereCollector:
 
         result = {
             "tec": target_df,
-            "background": bg_df,            "is_anomaly": anomaly,
+            "background": bg_df,
+            "is_anomaly": anomaly,
             "z_score_max": z_max,
             "z_score_min": z_min,
             "mean_bg": mean_bg,
