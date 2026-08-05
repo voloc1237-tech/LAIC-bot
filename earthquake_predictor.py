@@ -572,58 +572,60 @@ class EarthquakePredictor:
         total = len(lats) * len(lons)
         logger.info(f"🔮 Прогноз по сетке: {len(lats)}×{len(lons)} = {total} точек")
     
+        # 1. ЗАГРУЖАЕМ КОСМИЧЕСКУЮ ПОГОДУ ОДИН РАЗ (для всех точек)
+        current_space_data = None
         try:
             from space_weather import SpaceWeatherCollector
-            from ionosphere_collector import IonosphereCollector
             space_collector = SpaceWeatherCollector()
+            start_space = current_time - timedelta(days=10)
+            current_space_data = space_collector.fetch_all_for_period(start_space, current_time)
+            # ✅ ТИХО: не логируем успех, только ошибки
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка загрузки космической погоды: {e}")
+    
+        # 2. ЗАГРУЖАЕМ ИОНОСФЕРУ ОДИН РАЗ (для центра региона)
+        # Это сильно сократит количество запросов!
+        current_iono_data = None
+        try:
+            from ionosphere_collector import IonosphereCollector
             iono_collector = IonosphereCollector()
-            collectors_available = True
-        except ImportError as e:
-            collectors_available = False
-            logger.warning(f"⚠️ Коллекторы недоступны: {e}")
+            
+            # Берём центр региона для ионосферы
+            center_lat = (region_bounds['lat_min'] + region_bounds['lat_max']) / 2
+            center_lon = (region_bounds['lon_min'] + region_bounds['lon_max']) / 2
+            
+            current_iono_data = iono_collector.fetch_for_event(
+                event_time=current_time,
+                lat=center_lat, lon=center_lon,
+                days_before=7, days_after=0
+            )
+            # ✅ ТИХО: не логируем успех, только ошибки
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка загрузки ионосферы: {e}")
     
-        current_space_data = None
-        if collectors_available:
-            try:
-                start_space = current_time - timedelta(days=10)
-                current_space_data = space_collector.fetch_all_for_period(start_space, current_time)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка загрузки космической погоды: {e}")
-    
+        # 3. ПРОГНОЗ ПО СЕТКЕ
         for i, lat in enumerate(lats):
             for lon in lons:
                 region_name = self._get_region_for_point(lat, lon, region_data_dict)
-                region_df = region_data_dict.get(region_name)
-            
-                if region_df is None:
-                    region_df = pd.DataFrame()
-            
-                current_iono_data = None
-                if collectors_available:
-                    try:
-                        current_iono_data = iono_collector.fetch_for_event(
-                            event_time=current_time,
-                            lat=lat, lon=lon,
-                            days_before=7, days_after=0
-                        )
-                    except Exception as e:
-                        logger.debug(f"⚠️ Ionosphere error for ({lat:.2f}, {lon:.2f}): {e}")
-            
+                region_df = region_data_dict.get(region_name, pd.DataFrame())
+    
                 pred = self.predict(
                     lat=lat,
                     lon=lon,
                     current_time=current_time,
                     region_df=region_df,
                     lst_data=lst_cache.get(region_name) if lst_cache else None,
-                    iono_data=current_iono_data,
-                    space_data=current_space_data
+                    iono_data=current_iono_data,  # ✅ используем один раз загруженные данные
+                    space_data=current_space_data  # ✅ используем один раз загруженные данные
                 )
-            
+    
                 if pred['probability_m6'] >= CONFIG.PROBABILITY_THRESHOLD:
                     predictions.append(pred)
-        
-            if (i + 1) % 10 == 0:
-                logger.info(f"  Обработано: {(i+1) * len(lons)}/{total}")
+    
+            # ✅ Логируем прогресс РЕЖЕ (каждые 20%, а не каждые 10 строк)
+            progress = (i + 1) / len(lats)
+            if progress % 0.2 < 0.01 or i == len(lats) - 1:
+                logger.info(f"  Прогресс: {progress*100:.0f}%")
     
         df = pd.DataFrame(predictions)
         if not df.empty:
@@ -631,7 +633,6 @@ class EarthquakePredictor:
     
         logger.info(f"✅ Прогноз готов: {len(df)} точек с вероятностью ≥{CONFIG.PROBABILITY_THRESHOLD}")
         return df
-    
     
     def _get_region_for_point(self, lat: float, lon: float, region_data_dict: Dict) -> str:
         """Определение ближайшего региона."""
