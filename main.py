@@ -33,6 +33,8 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("tensorflow").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)      # если используется
 logging.getLogger("folium").setLevel(logging.WARNING)        # если шумит
+
+logger = logging.getLogger('LAIC')
 # ═══════════════════════════════════════════════════════════════
 # СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
 # ═══════════════════════════════════════════════════════════════
