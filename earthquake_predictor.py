@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, mean_absolute_error
+from sklearn.metrics import mean_absolute_error
 import joblib
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ CONFIG = PredictionConfig()
 
 
 # ═══════════════════════════════════════════════════════════════
-# КЛАСС ПРИЗНАКОВ (FEATURE EXTRACTOR)
+# ИЗВЛЕЧЕНИЕ ПРИЗНАКОВ (FEATURE EXTRACTOR)
 # ═══════════════════════════════════════════════════════════════
 
 class LAICFeatureExtractor:
@@ -146,10 +146,15 @@ class LAICFeatureExtractor:
         
         # 7. Погодные признаки
         if weather_data is not None and not weather_data.empty:
+            temp_col = weather_data.get('temp_mean', weather_data.get('temperature', pd.Series([20])))
+            temp_max = weather_data.get('temp_max', pd.Series([25])).max() if 'temp_max' in weather_data.columns else 25
+            temp_min = weather_data.get('temp_min', pd.Series([15])).min() if 'temp_min' in weather_data.columns else 15
+            humidity = weather_data.get('humidity', pd.Series([60])).mean() if 'humidity' in weather_data.columns else 60
+            
             features.update({
-                'temp_mean': weather_data.get('temp_mean', weather_data.get('temperature', pd.Series([20])).mean()),
-                'temp_range': weather_data.get('temp_max', pd.Series([25])).max() - weather_data.get('temp_min', pd.Series([15])).min() if not weather_data.empty else 10,
-                'humidity_mean': weather_data.get('humidity', pd.Series([60])).mean() if not weather_data.empty else 60,
+                'temp_mean': temp_col.mean() if hasattr(temp_col, 'mean') else 20,
+                'temp_range': temp_max - temp_min,
+                'humidity_mean': humidity,
             })
         else:
             features.update({
@@ -193,26 +198,21 @@ class LAICFeatureExtractor:
                 'events_count_near': 0,
             }
         
-        # Фильтруем события до текущего времени
         past_events = region_data[region_data['time'] < event_time]
         
-        # События за 30 и 7 дней
         days_30 = event_time - timedelta(days=30)
         days_7 = event_time - timedelta(days=7)
         
         events_30d = past_events[past_events['time'] >= days_30]
         events_7d = past_events[past_events['time'] >= days_7]
         
-        # События в радиусе 200 км
         near_events = past_events[
             ((past_events['latitude'] - lat)**2 + 
-             (past_events['longitude'] - lon)**2)**0.5 < 2.0  # ~200 км
+             (past_events['longitude'] - lon)**2)**0.5 < 2.0
         ]
         
-        # b-value (упрощённо)
         mags = events_30d['magnitude'].values if not events_30d.empty else np.array([3.0])
         if len(mags) > 5:
-            # log10(N) = a - b*M => b = slope
             hist, bins = np.histogram(mags, bins=10)
             log_n = np.log10(hist[hist > 0])
             bin_centers = (bins[:-1] + bins[1:])[hist > 0] / 2
@@ -246,18 +246,16 @@ class LAICFeatureExtractor:
         if len(df) < 3:
             return 0.0
         x = np.arange(len(df))
-        y = df.iloc[:, 0].values  # Первая колонка значений
+        y = df.iloc[:, 0].values
         return np.polyfit(x, y, 1)[0] if len(set(y)) > 1 else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════
-# МОДЕЛЬ ПРОГНОЗИРОВАНИЯ
+# ОСНОВНОЙ КЛАСС ПРОГНОЗИРОВАНИЯ
 # ═══════════════════════════════════════════════════════════════
 
 class EarthquakePredictor:
-    """
-    Мультимодельная система прогнозирования землетрясений.
-    """
+    """Мультимодельная система прогнозирования землетрясений."""
     
     FEATURE_NAMES = [
         'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
@@ -285,7 +283,6 @@ class EarthquakePredictor:
         
         self.is_trained = False
         
-        # Пытаемся загрузить существующие модели
         self._load_models()
     
     def _load_models(self):
@@ -323,8 +320,6 @@ class EarthquakePredictor:
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
         """
         Подготовка обучающих данных.
-        
-        Для каждого события M≥5.0 создаём записи за разные дни до события.
         """
         X = []
         y_prob = []
@@ -333,7 +328,6 @@ class EarthquakePredictor:
         y_lat = []
         y_lon = []
         
-        # Фильтруем значимые события
         significant_events = events_df[events_df['magnitude'] >= 5.0].copy()
         
         logger.info(f"📊 Подготовка данных: {len(significant_events)} событий")
@@ -343,19 +337,15 @@ class EarthquakePredictor:
             lat = event['latitude']
             lon = event['longitude']
             
-            # Определяем регион
             region_name = self._get_region_for_point(lat, lon, region_data_dict)
             region_df = region_data_dict.get(region_name, pd.DataFrame())
             
-            # Для разных моментов до события
             for days_before in CONFIG.DAYS_BEFORE_FEATURES:
                 sample_time = event_time - timedelta(days=days_before)
                 
-                # Пропускаем если время в будущем
                 if sample_time > datetime.now(timezone.utc):
                     continue
                 
-                # Извлекаем признаки
                 features = LAICFeatureExtractor.extract_features(
                     lat=lat,
                     lon=lon,
@@ -368,8 +358,6 @@ class EarthquakePredictor:
                 )
                 
                 X.append(features)
-                
-                # Целевые переменные
                 y_prob.append(1 if event['magnitude'] >= CONFIG.MAGNITUDE_THRESHOLD else 0)
                 y_mag.append(event['magnitude'])
                 y_time.append(days_before)
@@ -377,8 +365,6 @@ class EarthquakePredictor:
                 y_lon.append(lon)
         
         X = np.array(X)
-        
-        # Масштабирование признаков
         X_scaled = self.scaler.fit_transform(X)
         
         return X_scaled, {
@@ -389,22 +375,15 @@ class EarthquakePredictor:
             'lon': np.array(y_lon)
         }
     
-    def train(self, X: np.ndarray, y: Dict[str, np.ndarray]):
-        """
-        Обучение моделей.
-        """
+    def train(self, X: np.ndarray, y: Dict[str, np.ndarray]) -> bool:
+        """Обучение моделей."""
         if len(X) < 20:
             logger.warning("⚠️ Слишком мало данных для обучения (< 20 образцов)")
             return False
         
         logger.info(f"🧠 Обучение на {len(X)} образцах...")
         
-        # Разделение на train/test
-        X_train, X_test, y_prob_train, y_prob_test = train_test_split(
-            X, y['probability'], test_size=0.2, random_state=42, stratify=y['probability']
-        )
-        
-        # Модель 1: Вероятность M≥threshold
+        # Модель 1: Вероятность
         logger.info("  📊 Обучение модели вероятности...")
         self.probability_model = GradientBoostingClassifier(
             n_estimators=200,
@@ -414,9 +393,6 @@ class EarthquakePredictor:
             random_state=42
         )
         self.probability_model.fit(X, y['probability'])
-        
-        prob_score = self.probability_model.score(X_test, y_prob_test)
-        logger.info(f"  ✅ Вероятность: accuracy={prob_score:.3f}")
         
         # Модель 2: Магнитуда
         logger.info("  📊 Обучение модели магнитуды...")
@@ -428,11 +404,7 @@ class EarthquakePredictor:
         )
         self.magnitude_model.fit(X, y['magnitude'])
         
-        mag_pred = self.magnitude_model.predict(X_test)
-        mag_mae = mean_absolute_error(y['magnitude'][:len(mag_pred)], mag_pred)
-        logger.info(f"  ✅ Магнитуда: MAE={mag_mae:.2f}")
-        
-        # Модель 3: Время до события
+        # Модель 3: Время
         logger.info("  📊 Обучение модели времени...")
         self.time_model = GradientBoostingRegressor(
             n_estimators=150,
@@ -441,10 +413,6 @@ class EarthquakePredictor:
             random_state=42
         )
         self.time_model.fit(X, y['time'])
-        
-        time_pred = self.time_model.predict(X_test)
-        time_mae = mean_absolute_error(y['time'][:len(time_pred)], time_pred)
-        logger.info(f"  ✅ Время: MAE={time_mae:.1f} дней")
         
         # Модель 4: Широта
         logger.info("  📊 Обучение модели широты...")
@@ -467,13 +435,13 @@ class EarthquakePredictor:
         self.is_trained = True
         self._save_models()
         
-        # Feature importance
+        # Важность признаков
         importance = pd.DataFrame({
             'feature': self.FEATURE_NAMES,
             'importance': self.probability_model.feature_importances_
         }).sort_values('importance', ascending=False)
         
-        logger.info("  📈 Top-10 важных признаков:")
+        logger.info("  📈 Топ-10 важных признаков:")
         for _, row in importance.head(10).iterrows():
             logger.info(f"     {row['feature']}: {row['importance']:.3f}")
         
@@ -489,14 +457,11 @@ class EarthquakePredictor:
         iono_data: Dict = None,
         space_data: Dict = None
     ) -> Dict:
-        """
-        Прогноз для точки.
-        """
+        """Прогноз для точки."""
         if not self.is_trained:
             logger.warning("⚠️ Модели не обучены!")
             return self._empty_prediction()
         
-        # Извлекаем признаки
         features = LAICFeatureExtractor.extract_features(
             lat=lat,
             lon=lon,
@@ -509,17 +474,13 @@ class EarthquakePredictor:
         
         X = self.scaler.transform(features.reshape(1, -1))
         
-        # Предсказания
         prob = self.probability_model.predict_proba(X)[0][1]
         mag = self.magnitude_model.predict(X)[0]
         days = self.time_model.predict(X)[0]
         pred_lat = self.lat_model.predict(X)[0]
         pred_lon = self.lon_model.predict(X)[0]
         
-        # Уверенность
         confidence = self._get_confidence(prob, days)
-        
-        # Радиус ошибки
         radius = self._estimate_radius(prob)
         
         return {
@@ -532,4 +493,175 @@ class EarthquakePredictor:
             'days_to_event': round(float(days), 1),
             'confidence': confidence,
             'radius_km': radius,
-            'is_alert': prob >= CONF
+            'is_alert': prob >= CONFIG.HIGH_CONFIDENCE_THRESHOLD and confidence == 'HIGH'
+        }
+    
+    def predict_grid(
+        self,
+        region_bounds: Dict[str, float],
+        current_time: datetime,
+        region_data_dict: Dict[str, pd.DataFrame],
+        lst_cache: Dict = None,
+        iono_cache: Dict = None,
+        space_cache: Dict = None,
+        resolution: float = None
+    ) -> pd.DataFrame:
+        """Прогноз по сетке для региона."""
+        if not self.is_trained:
+            logger.warning("⚠️ Модели не обучены!")
+            return pd.DataFrame()
+        
+        resolution = resolution or CONFIG.GRID_RESOLUTION
+        
+        lats = np.arange(region_bounds['lat_min'], region_bounds['lat_max'], resolution)
+        lons = np.arange(region_bounds['lon_min'], region_bounds['lon_max'], resolution)
+        
+        predictions = []
+        total = len(lats) * len(lons)
+        logger.info(f"🔮 Прогноз по сетке: {len(lats)}×{len(lons)} = {total} точек")
+        
+        for i, lat in enumerate(lats):
+            for lon in lons:
+                region_name = self._get_region_for_point(lat, lon, region_data_dict)
+                region_df = region_data_dict.get(region_name, pd.DataFrame())
+                
+                pred = self.predict(
+                    lat=lat,
+                    lon=lon,
+                    current_time=current_time,
+                    region_df=region_df,
+                    lst_data=lst_cache.get(region_name) if lst_cache else None,
+                    iono_data=None,
+                    space_data=None
+                )
+                
+                if pred['probability_m6'] >= CONFIG.PROBABILITY_THRESHOLD:
+                    predictions.append(pred)
+            
+            if (i + 1) % 10 == 0:
+                logger.info(f"  Обработано: {(i+1) * len(lons)}/{total}")
+        
+        df = pd.DataFrame(predictions)
+        if not df.empty:
+            df = df.sort_values('probability_m6', ascending=False)
+        
+        logger.info(f"✅ Прогноз готов: {len(df)} точек с вероятностью ≥{CONFIG.PROBABILITY_THRESHOLD}")
+        return df
+    
+    def _get_region_for_point(self, lat: float, lon: float, region_data_dict: Dict) -> str:
+        """Определение ближайшего региона."""
+        if not region_data_dict:
+            return 'global'
+        
+        best_region = 'global'
+        min_dist = float('inf')
+        
+        for name, df in region_data_dict.items():
+            if not df.empty and 'latitude' in df.columns:
+                mean_lat = df['latitude'].mean()
+                mean_lon = df['longitude'].mean()
+                dist = ((lat - mean_lat)**2 + (lon - mean_lon)**2)**0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    best_region = name
+        
+        return best_region
+    
+    def _get_confidence(self, prob: float, days: float) -> str:
+        """Оценка уверенности."""
+        if prob > 0.7 and days < 14:
+            return 'HIGH'
+        elif prob > 0.4 and days < 21:
+            return 'MEDIUM'
+        else:
+            return 'LOW'
+    
+    def _estimate_radius(self, prob: float) -> int:
+        """Радиус ошибки в км."""
+        if prob > 0.7:
+            return 100
+        elif prob > 0.4:
+            return 200
+        else:
+            return 500
+    
+    def _empty_prediction(self) -> Dict:
+        """Пустой прогноз."""
+        return {
+            'input_lat': 0.0,
+            'input_lon': 0.0,
+            'predicted_lat': 0.0,
+            'predicted_lon': 0.0,
+            'probability_m6': 0.0,
+            'predicted_magnitude': 0.0,
+            'days_to_event': 0.0,
+            'confidence': 'NONE',
+            'radius_km': 0,
+            'is_alert': False
+        }
+
+
+# ═══════════════════════════════════════════════════════════════
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ═══════════════════════════════════════════════════════════════
+
+def create_risk_report(predictions_df: pd.DataFrame, top_n: int = 5) -> str:
+    """Создание текстового отчёта о рисках."""
+    if predictions_df.empty:
+        return "🔍 Значимых рисков не обнаружено."
+    
+    report = ["🌍 <b>ПРОГНОЗ ЗЕМЛЕТРЯСЕНИЙ</b>\n"]
+    report.append(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+    
+    for i, (_, row) in enumerate(predictions_df.head(top_n).iterrows(), 1):
+        emoji = "🔴" if row['is_alert'] else "🟠" if row['confidence'] == 'MEDIUM' else "🟡"
+        
+        report.append(f"\n{emoji} <b>Зона риска #{i}</b>")
+        report.append(f"📍 Координаты: {row['predicted_lat']}°, {row['predicted_lon']}°")
+        report.append(f"📏 Радиус: ±{row['radius_km']} км")
+        report.append(f"⏰ Прогноз: через {row['days_to_event']:.0f} дней")
+        report.append(f"📊 Вероятность M≥6.0: <b>{row['probability_m6']*100:.1f}%</b>")
+        report.append(f"🎯 Магнитуда: M{row['predicted_magnitude']}")
+        report.append(f"🔒 Уверенность: {row['confidence']}")
+    
+    report.append(f"\n⚠️ Прогноз основан на LAIC-анализе и ИИ-модели")
+    report.append(f"📊 Всего зон с риском: {len(predictions_df)}")
+    
+    return "\n".join(report)
+
+
+# ═══════════════════════════════════════════════════════════════
+# ТЕСТ
+# ═══════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    test_events = pd.DataFrame({
+        'id': ['evt1', 'evt2', 'evt3'],
+        'time': [
+            datetime(2026, 7, 1, tzinfo=timezone.utc),
+            datetime(2026, 7, 15, tzinfo=timezone.utc),
+            datetime(2026, 7, 28, tzinfo=timezone.utc),
+        ],
+        'latitude': [35.0, -20.0, 40.0],
+        'longitude': [140.0, -70.0, 35.0],
+        'magnitude': [6.5, 5.2, 7.0],
+        'depth_km': [10, 20, 15]
+    })
+    
+    predictor = EarthquakePredictor(model_dir="data/models_test")
+    
+    X, y = predictor.prepare_training_data(
+        events_df=test_events,
+        region_data_dict={'global': test_events},
+        lst_cache={},
+        iono_cache={},
+        space_cache={},
+        weather_cache={}
+    )
+    
+    predictor.train(X, y)
+    
+    pred = predictor.predict(35.0, 140.0, datetime.now(timezone.utc))
+    print(f"\nПрогноз: {pred}")
