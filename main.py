@@ -764,153 +764,162 @@ def main():
                 except Exception as e:
                     logger.error(f"❌ Ошибка алерта {r.get('region', 'unknown')}: {e}")
 
-# ═══════════════════════════════════════════════════════════════
-# 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
-# ═══════════════════════════════════════════════════════════════
-if VISUALIZER_AVAILABLE and TG_AVAILABLE and chat_id:
-    logger.info("\n" + "=" * 70)
-    logger.info("🎨 ЭТАП 4: Визуализация данных")
-    logger.info("=" * 70)
+    # ═══════════════════════════════════════════════════════════════
+    # 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
+    # ═══════════════════════════════════════════════════════════════
+    if VISUALIZER_AVAILABLE and TG_AVAILABLE and chat_id:
+        logger.info("\n" + "=" * 70)
+        logger.info("🎨 ЭТАП 4: Визуализация данных")
+        logger.info("=" * 70)
 
-    period_days = settings.get('analysis', {}).get('history_days', 30)
+        period_days = settings.get('analysis', {}).get('history_days', 30)
 
-    for region_name, df in data.items():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
+        for region_name, df in data.items():
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                continue
 
-        lst_info = lst_cache.get(region_name)
+            lst_info = lst_cache.get(region_name)
 
-        # ============================================================
-        # 4a. ОСНОВНОЙ PNG-ГРАФИК (временной ряд + гистограмма)
-        # ============================================================
-        try:
-            img_bytes = plot_magnitude_series(df, region_name)
-            if img_bytes:
-                caption = f"📊 {region_name} – временной ряд магнитуд (последние {period_days} дней)"
-                send_photo(chat_id, img_bytes, caption)
-                logger.info(f"✅ PNG-график для {region_name} отправлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка генерации PNG для {region_name}: {e}")
-
-        # ============================================================
-        # 4b. ГРАФИК АНОМАЛИЙ (если есть данные от ИИ)
-        # ============================================================
-        if 'anomaly_df' in locals() and anomaly_df is not None and not anomaly_df.empty:
+            # 4a. ОСНОВНОЙ PNG-ГРАФИК
             try:
-                region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
-                if not region_anomalies.empty and len(region_anomalies) > 1:
-                    img_bytes = create_anomaly_plot(region_anomalies, region_name)
+                img_bytes = plot_magnitude_series(df, region_name)
+                if img_bytes:
+                    caption = f"📊 {region_name} – временной ряд магнитуд (последние {period_days} дней)"
+                    send_photo(chat_id, img_bytes, caption)
+                    logger.info(f"✅ PNG-график для {region_name} отправлен")
+            except Exception as e:
+                logger.error(f"❌ Ошибка генерации PNG для {region_name}: {e}")
+
+            # 4b. ГРАФИК АНОМАЛИЙ
+            if 'anomaly_df' in locals() and anomaly_df is not None and not anomaly_df.empty:
+                try:
+                    region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
+                    if not region_anomalies.empty and len(region_anomalies) > 1:
+                        img_bytes = create_anomaly_plot(region_anomalies, region_name)
+                        if img_bytes:
+                            send_photo(chat_id, img_bytes, 
+                                      caption=f"🧠 ИИ-анализ аномалий — {region_name}")
+                            logger.info(f"✅ График аномалий для {region_name} отправлен")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка генерации графика аномалий: {e}")
+
+            # 4c. ГРАФИК ИОНОСФЕРЫ
+            region_iono = None
+            for event_id, iono_result in event_iono.items():
+                event_row = all_events[all_events['id'] == event_id]
+                if not event_row.empty:
+                    evt_region = event_row.iloc[0].get('region_name', 'global')
+                    if evt_region == region_name:
+                        region_iono = iono_result
+                        break
+            
+            if region_iono and isinstance(region_iono, dict) and 'tec' in region_iono:
+                try:
+                    img_bytes = create_iono_anomaly_plot(region_iono, region_name)
                     if img_bytes:
                         send_photo(chat_id, img_bytes, 
-                                  caption=f"🧠 ИИ-анализ аномалий — {region_name}")
-                        logger.info(f"✅ График аномалий для {region_name} отправлен")
-            except Exception as e:
-                logger.error(f"❌ Ошибка генерации графика аномалий для {region_name}: {e}")
+                                  caption=f"🛰️ Ионосферная аномалия — {region_name}")
+                        logger.info(f"✅ График ионосферы для {region_name} отправлен")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка генерации графика ионосферы: {e}")
 
-        # ============================================================
-        # 4c. ГРАФИК ИОНОСФЕРЫ (если есть данные)
-        # ============================================================
-        # Ищем ионосферные данные для событий в этом регионе
-        region_iono = None
-        for event_id, iono_result in event_iono.items():
-            # Проверяем, принадлежит ли событие этому региону
-            event_row = all_events[all_events['id'] == event_id]
-            if not event_row.empty:
-                evt_region = event_row.iloc[0].get('region_name', 'global')
-                if evt_region == region_name:
-                    region_iono = iono_result
-                    break
-        
-        if region_iono and isinstance(region_iono, dict) and 'tec' in region_iono:
+            # 4d. ГРАФИК СОЛНЕЧНОЙ АКТИВНОСТИ
+            region_space = None
+            region_mag = 0
+            for event_id, space_result in event_space.items():
+                event_row = all_events[all_events['id'] == event_id]
+                if not event_row.empty:
+                    evt_region = event_row.iloc[0].get('region_name', 'global')
+                    if evt_region == region_name:
+                        region_space = space_result
+                        region_mag = event_row.iloc[0].get('magnitude', 0)
+                        break
+            
+            if region_space and isinstance(region_space, dict):
+                try:
+                    # Добавляем время события
+                    if 'event_time' not in region_space:
+                        for event_id in event_space.keys():
+                            evt_row = all_events[all_events['id'] == event_id]
+                            if not evt_row.empty:
+                                evt_time = evt_row.iloc[0].get('time')
+                                if evt_time:
+                                    region_space['event_time'] = evt_time
+                                    break
+                    
+                    img_bytes = create_solar_activity_plot(region_space, region_name, region_mag)
+                    if img_bytes:
+                        send_photo(chat_id, img_bytes, 
+                                  caption=f"☀️ Солнечная активность — {region_name}")
+                        logger.info(f"✅ График солнечной активности для {region_name} отправлен")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка генерации графика солнечной активности: {e}")
+
+            # 4e. ИНТЕРАКТИВНЫЙ HTML-ОТЧЁТ
             try:
-                img_bytes = create_iono_anomaly_plot(region_iono, region_name)
-                if img_bytes:
-                    send_photo(chat_id, img_bytes, 
-                              caption=f"🛰️ Ионосферная аномалия — {region_name}")
-                    logger.info(f"✅ График ионосферы для {region_name} отправлен")
+                html_path = create_interactive_report(
+                    region_name=region_name,
+                    df=df,
+                    lst_data=lst_info,
+                    period_days=period_days,
+                    iono_data=region_iono,
+                    space_data=region_space,
+                    anomaly_data=anomaly_df if 'anomaly_df' in locals() else None
+                )
+                if html_path:
+                    caption = f"📄 {region_name} – интерактивный отчёт"
+                    send_document(chat_id, html_path, caption)
+                    logger.info(f"✅ HTML-отчёт для {region_name} отправлен")
             except Exception as e:
-                logger.error(f"❌ Ошибка генерации графика ионосферы для {region_name}: {e}")
+                logger.error(f"❌ Ошибка генерации HTML для {region_name}: {e}")
 
-        # ============================================================
-        # 4d. ГРАФИК СОЛНЕЧНОЙ АКТИВНОСТИ (если есть данные)
-        # ============================================================
-        # Ищем космическую погоду для событий в этом регионе
-        region_space = None
-        region_mag = 0
-        for event_id, space_result in event_space.items():
-            event_row = all_events[all_events['id'] == event_id]
-            if not event_row.empty:
-                evt_region = event_row.iloc[0].get('region_name', 'global')
-                if evt_region == region_name:
-                    region_space = space_result
-                    region_mag = event_row.iloc[0].get('magnitude', 0)
-                    break
-        
-        if region_space and isinstance(region_space, dict):
-            try:
-                # Добавляем время события для вертикальной линии
-                if 'event_time' not in region_space:
-                    # Находим время события
-                    evt_time = None
-                    for event_id in event_space.keys():
-                        evt_row = all_events[all_events['id'] == event_id]
-                        if not evt_row.empty:
-                            evt_time = evt_row.iloc[0].get('time')
-                            break
-                    if evt_time:
-                        region_space['event_time'] = evt_time
-                
-                img_bytes = create_solar_activity_plot(region_space, region_name, region_mag)
-                if img_bytes:
-                    send_photo(chat_id, img_bytes, 
-                              caption=f"☀️ Солнечная активность — {region_name}")
-                    logger.info(f"✅ График солнечной активности для {region_name} отправлен")
-            except Exception as e:
-                logger.error(f"❌ Ошибка генерации графика солнечной активности для {region_name}: {e}")
+    elif not VISUALIZER_AVAILABLE:
+        logger.info("ℹ️ Визуализация пропущена (visualizer.py не найден)")
+    elif not TG_AVAILABLE:
+        logger.info("ℹ️ Визуализация пропущена (Telegram модуль не доступен)")
 
-        # ============================================================
-        # 4e. ИНТЕРАКТИВНЫЙ HTML-ОТЧЁТ (со всеми данными)
-        # ============================================================
-        try:
-            # Собираем все данные для отчёта
-            html_path = create_interactive_report(
-                region_name=region_name,
-                df=df,
-                lst_data=lst_info,
-                period_days=period_days,
-                iono_data=region_iono,          # ионосфера
-                space_data=region_space,        # космическая погода
-                anomaly_data=anomaly_df if 'anomaly_df' in locals() else None  # ИИ-аномалии
-            )
-            if html_path:
-                caption = f"📄 {region_name} – интерактивный отчёт (2D/3D карты, графики)"
-                send_document(chat_id, html_path, caption)
-                logger.info(f"✅ HTML-отчёт для {region_name} отправлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка генерации HTML для {region_name}: {e}")
-
-elif not VISUALIZER_AVAILABLE:
-    logger.info("ℹ️ Визуализация пропущена (visualizer.py не найден)")
-elif not TG_AVAILABLE:
-    logger.info("ℹ️ Визуализация пропущена (Telegram модуль не доступен)")
-        
     # ═══════════════════════════════════════════════════════════════
     # ИТОГ
     # ═══════════════════════════════════════════════════════════════
     critical = sum(1 for r in results if r.get('risk_level') == 'critical')
     high = sum(1 for r in results if r.get('risk_level') == 'high')
-    
+
     logger.info("\n" + "=" * 70)
     logger.info("✅ АНАЛИЗ ЗАВЕРШЁН")
     logger.info(f"   Регионов: {len(results)}")
     logger.info(f"   🔴 Критических: {critical}")
     logger.info(f"   🟠 Высоких: {high}")
-    logger.info(f"   🚨 Алертов отправлено: {alerts_sent}")
+    if TG_AVAILABLE:
+        logger.info(f"   🚨 Алертов отправлено: {alerts_sent if 'alerts_sent' in locals() else 0}")
     logger.info("=" * 70)
-    
+
     if critical > 0:
         sys.exit(0)
 
 
 if __name__ == '__main__':
     main()
+
+
+
+        
+    # ═══════════════════════════════════════════════════════════════
+    # ИТОГ
+    # ═══════════════════════════════════════════════════════════════
+    #critical = sum(1 for r in results if r.get('risk_level') == 'critical')
+    #high = sum(1 for r in results if r.get('risk_level') == 'high')
+    
+    #logger.info("\n" + "=" * 70)
+    #logger.info("✅ АНАЛИЗ ЗАВЕРШЁН")
+    #logger.info(f"   Регионов: {len(results)}")
+    #logger.info(f"   🔴 Критических: {critical}")
+    #logger.info(f"   🟠 Высоких: {high}")
+    #logger.info(f"   🚨 Алертов отправлено: {alerts_sent}")
+    #logger.info("=" * 70)
+    
+    #if critical > 0:
+        #sys.exit(0)
+
+
+#if __name__ == '__main__':
+    #main()
