@@ -10,8 +10,6 @@ import requests
 import pandas as pd
 import numpy as np
 import logging
-logging.getLogger("urllib3").setLevel(logging.WARNING)     
-logging.getLogger("requests").setLevel(logging.WARNING)
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
