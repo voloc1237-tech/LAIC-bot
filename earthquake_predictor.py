@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PredictionConfig:
     """Конфигурация прогнозирования."""
-    MAGNITUDE_THRESHOLD: float = 6.0      # Порог для "крупного" события
-    GRID_RESOLUTION: float = 2.0           # Шаг сетки в градусах
-    PROBABILITY_THRESHOLD: float = 0.3     # Минимальная вероятность для отчёта
-    HIGH_CONFIDENCE_THRESHOLD: float = 0.6 # Порог для алерта
-    DAYS_BEFORE_FEATURES: List[int] = None # Дни до события для обучения
+    MAGNITUDE_THRESHOLD: float = 6.0
+    GRID_RESOLUTION: float = 2.0
+    PROBABILITY_THRESHOLD: float = 0.3
+    HIGH_CONFIDENCE_THRESHOLD: float = 0.6
+    DAYS_BEFORE_FEATURES: List[int] = None
     
     def __post_init__(self):
         if self.DAYS_BEFORE_FEATURES is None:
@@ -44,7 +44,7 @@ CONFIG = PredictionConfig()
 
 
 # ═══════════════════════════════════════════════════════════════
-# ИЗВЛЕЧЕНИЕ ПРИЗНАКОВ (FEATURE EXTRACTOR)
+# ИЗВЛЕЧЕНИЕ ПРИЗНАКОВ
 # ═══════════════════════════════════════════════════════════════
 
 class LAICFeatureExtractor:
@@ -61,12 +61,10 @@ class LAICFeatureExtractor:
         space_data: Optional[Dict] = None,
         weather_data: Optional[pd.DataFrame] = None
     ) -> np.ndarray:
-        """
-        Извлечение вектора признаков для точки и времени.
-        """
+        """Извлечение вектора признаков."""
         features = {}
         
-        # 1. Сейсмические признаки (история региона)
+        # 1. Сейсмические признаки
         seismic_features = LAICFeatureExtractor._get_seismic_features(
             lat, lon, event_time, region_data
         )
@@ -85,11 +83,9 @@ class LAICFeatureExtractor:
             })
         else:
             features.update({
-                'tec_anomaly_max': 0,
-                'tec_anomaly_min': 0,
+                'tec_anomaly_max': 0, 'tec_anomaly_min': 0,
                 'iono_anomaly_level': 0,
-                'iono_historical_years': 0,
-                'iono_yoy_change': 0,
+                'iono_historical_years': 0, 'iono_yoy_change': 0,
             })
         
         # 3. Спутниковые признаки
@@ -102,9 +98,7 @@ class LAICFeatureExtractor:
             })
         else:
             features.update({
-                'lst_available': 0,
-                'lst_value': 20,
-                'lst_source_real': 0,
+                'lst_available': 0, 'lst_value': 20, 'lst_source_real': 0,
             })
         
         # 4. Космическая погода
@@ -114,12 +108,12 @@ class LAICFeatureExtractor:
             f107_df = space_data.get('f107', pd.DataFrame())
             
             features.update({
-                'dst_mean': dst_df['dst'].mean() if not dst_df.empty else -10,
-                'dst_std': dst_df['dst'].std() if not dst_df.empty else 5,
-                'dst_min': dst_df['dst'].min() if not dst_df.empty else -50,
-                'kp_max': kp_df['kp'].max() if not kp_df.empty else 3,
-                'kp_mean': kp_df['kp'].mean() if not kp_df.empty else 1.5,
-                'f107_mean': f107_df['f107'].mean() if not f107_df.empty else 140,
+                'dst_mean': dst_df['dst'].mean() if not dst_df.empty and 'dst' in dst_df.columns else -10,
+                'dst_std': dst_df['dst'].std() if not dst_df.empty and 'dst' in dst_df.columns else 5,
+                'dst_min': dst_df['dst'].min() if not dst_df.empty and 'dst' in dst_df.columns else -50,
+                'kp_max': kp_df['kp'].max() if not kp_df.empty and 'kp' in kp_df.columns else 3,
+                'kp_mean': kp_df['kp'].mean() if not kp_df.empty and 'kp' in kp_df.columns else 1.5,
+                'f107_mean': f107_df['f107'].mean() if not f107_df.empty and 'f107' in f107_df.columns else 140,
                 'f107_trend': LAICFeatureExtractor._compute_trend(f107_df) if not f107_df.empty else 0,
             })
         else:
@@ -158,12 +152,9 @@ class LAICFeatureExtractor:
             })
         else:
             features.update({
-                'temp_mean': 20,
-                'temp_range': 10,
-                'humidity_mean': 60,
+                'temp_mean': 20, 'temp_range': 10, 'humidity_mean': 60,
             })
         
-        # Упорядоченный вектор признаков
         feature_names = [
             'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
             'mean_mag_30d', 'depth_mean', 'events_count_near',
@@ -189,12 +180,9 @@ class LAICFeatureExtractor:
         """Сейсмические признаки из истории."""
         if region_data.empty:
             return {
-                'seismic_rate_30d': 0,
-                'seismic_rate_7d': 0,
-                'b_value': 1.0,
-                'max_mag_30d': 0,
-                'mean_mag_30d': 0,
-                'depth_mean': 10,
+                'seismic_rate_30d': 0, 'seismic_rate_7d': 0,
+                'b_value': 1.0, 'max_mag_30d': 0,
+                'mean_mag_30d': 0, 'depth_mean': 10,
                 'events_count_near': 0,
             }
         
@@ -242,12 +230,33 @@ class LAICFeatureExtractor:
     
     @staticmethod
     def _compute_trend(df: pd.DataFrame) -> float:
-        """Вычисление тренда временного ряда."""
+        """
+        Вычисление тренда временного ряда.
+        ✅ ИСПРАВЛЕНО: берём числовую колонку, не даты!
+        """
         if len(df) < 3:
             return 0.0
-        x = np.arange(len(df))
-        y = df.iloc[:, 0].values
-        return np.polyfit(x, y, 1)[0] if len(set(y)) > 1 else 0.0
+        
+        # Ищем числовые колонки (исключаем time/datetime)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Убираем 'time' если он случайно числовой
+        numeric_cols = [c for c in numeric_cols if c not in ['time', 'timestamp']]
+        
+        if len(numeric_cols) == 0:
+            return 0.0
+        
+        # Берём первую числовую колонку (f107, dst, kp)
+        y = df[numeric_cols[0]].values
+        
+        if len(set(y)) <= 1:  # Все значения одинаковые
+            return 0.0
+        
+        x = np.arange(len(y))
+        try:
+            return float(np.polyfit(x, y, 1)[0])
+        except (np.linalg.LinAlgError, ValueError):
+            return 0.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -318,9 +327,7 @@ class EarthquakePredictor:
         space_cache: Dict,
         weather_cache: Dict
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-        """
-        Подготовка обучающих данных.
-        """
+        """Подготовка обучающих данных."""
         X = []
         y_prob = []
         y_mag = []
@@ -346,23 +353,32 @@ class EarthquakePredictor:
                 if sample_time > datetime.now(timezone.utc):
                     continue
                 
-                features = LAICFeatureExtractor.extract_features(
-                    lat=lat,
-                    lon=lon,
-                    event_time=sample_time,
-                    region_data=region_df,
-                    lst_data=lst_cache.get(region_name),
-                    iono_data=iono_cache.get(event.get('id')),
-                    space_data=space_cache.get(event.get('id')),
-                    weather_data=weather_cache.get(event.get('id'))
-                )
-                
-                X.append(features)
-                y_prob.append(1 if event['magnitude'] >= CONFIG.MAGNITUDE_THRESHOLD else 0)
-                y_mag.append(event['magnitude'])
-                y_time.append(days_before)
-                y_lat.append(lat)
-                y_lon.append(lon)
+                try:
+                    features = LAICFeatureExtractor.extract_features(
+                        lat=lat,
+                        lon=lon,
+                        event_time=sample_time,
+                        region_data=region_df,
+                        lst_data=lst_cache.get(region_name),
+                        iono_data=iono_cache.get(event.get('id')),
+                        space_data=space_cache.get(event.get('id')),
+                        weather_data=weather_cache.get(event.get('id'))
+                    )
+                    
+                    X.append(features)
+                    y_prob.append(1 if event['magnitude'] >= CONFIG.MAGNITUDE_THRESHOLD else 0)
+                    y_mag.append(event['magnitude'])
+                    y_time.append(days_before)
+                    y_lat.append(lat)
+                    y_lon.append(lon)
+                    
+                except Exception as e:
+                    logger.debug(f"⚠️ Ошибка извлечения признаков для {event.get('id')}: {e}")
+                    continue
+        
+        if len(X) == 0:
+            logger.warning("⚠️ Нет данных для обучения")
+            return np.array([]), {}
         
         X = np.array(X)
         X_scaled = self.scaler.fit_transform(X)
@@ -661,7 +677,8 @@ if __name__ == "__main__":
         weather_cache={}
     )
     
-    predictor.train(X, y)
-    
-    pred = predictor.predict(35.0, 140.0, datetime.now(timezone.utc))
-    print(f"\nПрогноз: {pred}")
+    if len(X) > 0:
+        predictor.train(X, y)
+        
+        pred = predictor.predict(35.0, 140.0, datetime.now(timezone.utc))
+        print(f"\nПрогноз: {pred}")
