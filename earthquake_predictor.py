@@ -463,7 +463,7 @@ class EarthquakePredictor:
         
         return True
     
-    def predict(
+     def predict(
         self,
         lat: float,
         lon: float,
@@ -478,11 +478,15 @@ class EarthquakePredictor:
             logger.warning("⚠️ Модели не обучены!")
             return self._empty_prediction()
         
+        # ✅ ИСПРАВЛЕНО: проверка DataFrame
+        if region_df is None:
+            region_df = pd.DataFrame()
+        
         features = LAICFeatureExtractor.extract_features(
             lat=lat,
             lon=lon,
             event_time=current_time,
-            region_data=region_df or pd.DataFrame(),
+            region_data=region_df,
             lst_data=lst_data,
             iono_data=iono_data,
             space_data=space_data
@@ -539,7 +543,11 @@ class EarthquakePredictor:
         for i, lat in enumerate(lats):
             for lon in lons:
                 region_name = self._get_region_for_point(lat, lon, region_data_dict)
-                region_df = region_data_dict.get(region_name, pd.DataFrame())
+                region_df = region_data_dict.get(region_name)
+                
+                # ✅ ИСПРАВЛЕНО: проверка на None
+                if region_df is None:
+                    region_df = pd.DataFrame()
                 
                 pred = self.predict(
                     lat=lat,
