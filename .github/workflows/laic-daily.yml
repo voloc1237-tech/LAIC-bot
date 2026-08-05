@@ -57,7 +57,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-          
+          NASA_USERNAME: ${{ secrets.NASA_USERNAME }}
+          NASA_PASSWORD: ${{ secrets.NASA_PASSWORD }}
           # 👇 КРИТИЧЕСКИ ВАЖНО: Включаем тестовый режим для скачивания реальных файлов IONEX
           TEST_MODE: "true"
           
