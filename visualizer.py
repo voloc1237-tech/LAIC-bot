@@ -8,13 +8,13 @@ import os
 import io
 import tempfile
 import pandas as pd
-import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
 import plotly.graph_objs as go
 from plotly.offline import plot
 import logging
-
+import matplotlib.pyplot as plt
+plt.set_loglevel('warning')  # Подавляет предупреждения Matplotlib
 logger = logging.getLogger(__name__)
 
 # Попытка импортировать htmlmin (опционально)
