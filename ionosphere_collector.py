@@ -96,7 +96,7 @@ class IonosphereCollector:
                     with open(local_path, 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
                 if local_path.exists() and local_path.stat().st_size > 0:
-                    logger.debug(f"✅ Скачан и распакован: {local_path.name}")                    return str(local_path)
+                   logger.debug(f"✅ Скачан и распакован: {local_path.name}")                    return str(local_path)
                 else:
                     # Возможно, файл не был упакован — переименовываем
                     local_path_z.rename(local_path)
