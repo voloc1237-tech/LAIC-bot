@@ -34,6 +34,10 @@ logging.getLogger("tensorflow").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)      # если используется
 logging.getLogger("folium").setLevel(logging.WARNING)        # если шумит
 
+# 🔥 ДОБАВИТЬ: Подавление sklearn и numpy предупреждений
+logging.getLogger("sklearn").setLevel(logging.ERROR)
+logging.getLogger("numpy").setLevel(logging.ERROR)
+
 logger = logging.getLogger('LAIC')
 # ═══════════════════════════════════════════════════════════════
 # СОЗДАНИЕ НЕОБХОДИМЫХ ПАПОК
