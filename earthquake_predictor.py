@@ -85,9 +85,9 @@ class LAICFeatureExtractor:
             })
         else:
             features.update({
-                'tec_anomaly_max': 0, 'tec_anomaly_min': 0,
-                'iono_anomaly_level': 0,
-                'iono_historical_years': 0, 'iono_yoy_change': 0,
+                'tec_anomaly_max': np.nan, 'tec_anomaly_min': np.nan,
+                'iono_anomaly_level': np.nan,
+                'iono_historical_years': np.nan, 'iono_yoy_change': np.nan,
             })
         
         # 3. Спутниковые признаки
@@ -95,12 +95,12 @@ class LAICFeatureExtractor:
             lst_val = lst_data.get('lst_celsius', None)
             features.update({
                 'lst_available': 1 if lst_val is not None else 0,
-                'lst_value': lst_val if lst_val is not None else 20,
+                'lst_value': lst_val if lst_val is not None else np.nan,
                 'lst_source_real': 1 if 'sentinel' in str(lst_data.get('source', '')) else 0,
             })
         else:
             features.update({
-                'lst_available': 0, 'lst_value': 20, 'lst_source_real': 0,
+                'lst_available': 0, 'lst_value': np.nan, 'lst_source_real': 0,
             })
         
         # 4. Космическая погода
@@ -110,19 +110,19 @@ class LAICFeatureExtractor:
             f107_df = space_data.get('f107', pd.DataFrame())
             
             features.update({
-                'dst_mean': dst_df['dst'].mean() if not dst_df.empty and 'dst' in dst_df.columns else -10,
-                'dst_std': dst_df['dst'].std() if not dst_df.empty and 'dst' in dst_df.columns else 5,
-                'dst_min': dst_df['dst'].min() if not dst_df.empty and 'dst' in dst_df.columns else -50,
-                'kp_max': kp_df['kp'].max() if not kp_df.empty and 'kp' in kp_df.columns else 3,
-                'kp_mean': kp_df['kp'].mean() if not kp_df.empty and 'kp' in kp_df.columns else 1.5,
-                'f107_mean': f107_df['f107'].mean() if not f107_df.empty and 'f107' in f107_df.columns else 140,
-                'f107_trend': LAICFeatureExtractor._compute_trend(f107_df) if not f107_df.empty else 0,
+                'dst_mean': dst_df['dst'].mean() if not dst_df.empty and 'dst' in dst_df.columns else np.nan,
+                'dst_std': dst_df['dst'].std() if not dst_df.empty and 'dst' in dst_df.columns else np.nan,
+                'dst_min': dst_df['dst'].min() if not dst_df.empty and 'dst' in dst_df.columns else np.nan,
+                'kp_max': kp_df['kp'].max() if not kp_df.empty and 'kp' in kp_df.columns else np.nan,
+                'kp_mean': kp_df['kp'].mean() if not kp_df.empty and 'kp' in kp_df.columns else np.nan,
+                'f107_mean': f107_df['f107'].mean() if not f107_df.empty and 'f107' in f107_df.columns else np.nan,
+                'f107_trend': LAICFeatureExtractor._compute_trend(f107_df) if not f107_df.empty else np.nan,
             })
         else:
             features.update({
-                'dst_mean': -10, 'dst_std': 5, 'dst_min': -50,
-                'kp_max': 3, 'kp_mean': 1.5,
-                'f107_mean': 140, 'f107_trend': 0,
+                'dst_mean': np.nan, 'dst_std': np.nan, 'dst_min': np.nan,
+                'kp_max': np.nan, 'kp_mean': np.nan,
+                'f107_mean': np.nan, 'f107_trend': np.nan,
             })
         
         # 5. Временные признаки
@@ -154,7 +154,7 @@ class LAICFeatureExtractor:
             })
         else:
             features.update({
-                'temp_mean': 20, 'temp_range': 10, 'humidity_mean': 60,
+                'temp_mean': np.nan, 'temp_range': np.nan, 'humidity_mean': np.nan,
             })
         
         feature_names = [
@@ -183,8 +183,8 @@ class LAICFeatureExtractor:
         if region_data.empty:
             return {
                 'seismic_rate_30d': 0, 'seismic_rate_7d': 0,
-                'b_value': 1.0, 'max_mag_30d': 0,
-                'mean_mag_30d': 0, 'depth_mean': 10,
+                'b_value': np.nan, 'max_mag_30d': np.nan,
+                'mean_mag_30d': np.nan, 'depth_mean': np.nan,
                 'events_count_near': 0,
             }
         
@@ -308,7 +308,7 @@ class EarthquakePredictor:
             self.time_model = joblib.load(f"{self.model_dir}/time_model.pkl")
             self.lat_model = joblib.load(f"{self.model_dir}/lat_model.pkl")
             self.lon_model = joblib.load(f"{self.model_dir}/lon_model.pkl")
-            self.scaler = joblib.load(f"{self.model_dir}/scaler.pkl")
+            self.scaler = joblib.load(f"{self.model_dir}/preprocessor.pkl")
             self.is_trained = True
             logger.info("✅ Модели загружены из кэша")
         except FileNotFoundError:
@@ -321,7 +321,7 @@ class EarthquakePredictor:
         joblib.dump(self.time_model, f"{self.model_dir}/time_model.pkl")
         joblib.dump(self.lat_model, f"{self.model_dir}/lat_model.pkl")
         joblib.dump(self.lon_model, f"{self.model_dir}/lon_model.pkl")
-        joblib.dump(self.scaler, f"{self.model_dir}/scaler.pkl")
+        joblib.dump(self.scaler, f"{self.model_dir}/preprocessor.pkl")
         logger.info("💾 Модели сохранены")
 
     def prepare_training_data(
