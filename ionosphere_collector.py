@@ -8,10 +8,13 @@ ionosphere_collector.py — сбор реальных TEC из IONEX-файло�
   3. Парсер учитывает формат IONEX (числа выше подписи)
 """
 
+import os
 import logging
 import gzip
 import shutil
 import urllib.request
+import requests
+from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
@@ -55,45 +58,135 @@ class IonosphereCollector:
         ]
 
     def _download_ionex(self, date: datetime):
-        """Скачивает IONEX с любого зеркала."""
+        """Скачивает IONEX: CDDIS с auth NASA, зеркала без auth."""
         doy = date.timetuple().tm_yday
         local_path = self.cache_dir / f"ionex_{date.year}_{doy:03d}.inx"
 
+        # Если файл уже есть в кэше и не пустой — используем
         if local_path.exists() and local_path.stat().st_size > 0:
             return str(local_path)
 
         tmp_path = local_path.with_suffix(".tmp")
 
-        for url in self._get_ionex_urls(date):
-            try:
-                logger.info(f"📥 Скачивание IONEX: {url}")
-                urllib.request.urlretrieve(url, tmp_path, timeout=60)
+        # Учётные данные (из параметров или окружения)
+        nasa_user = self.username or os.environ.get("NASA_USERNAME")
+        nasa_pass = self.password or os.environ.get("NASA_PASSWORD")
 
-                if tmp_path.stat().st_size == 0:
-                    tmp_path.unlink(missing_ok=True)
-                    continue
+        # Формируем URL для CDDIS
+        long_name = (
+            "COD0OPSFIN_"
+            f"{date.year}{doy:03d}0000"
+            "_01D_01H_GIM.INX.gz"
+        )
+        yy = date.year % 100
+        short_name = f"codg{doy:03d}0.{yy:02d}i.Z"
 
-                with open(tmp_path, "rb") as f:
-                    magic = f.read(2)
+        cddis_url = (
+            "https://cddis.nasa.gov/archive/gnss/"
+            f"products/ionex/{date.year}/{doy:03d}/{long_name}"
+        )
+        mirror_urls = [
+            "https://files.igs.org/pub/product/ionex/"
+            f"{date.year}/{doy:03d}/{long_name}",
+            "https://ftp.aiub.unibe.ch/CODE/"
+            f"{date.year}/{short_name}",
+        ]
 
-                if magic == b"\x1f\x8b":
-                    with gzip.open(tmp_path, "rb") as f_in:
-                        with open(local_path, "wb") as f_out:
-                            shutil.copyfileobj(f_in, f_out)
-                    tmp_path.unlink(missing_ok=True)
-                else:
-                    tmp_path.rename(local_path)
+        # 1. Пытаемся скачать с CDDIS с аутентификацией
+        if nasa_user and nasa_pass:
+            for attempt in range(self.MAX_RETRIES):
+                try:
+                    logger.info(f"📥 CDDIS (auth): {cddis_url}")
+                    auth = HTTPBasicAuth(nasa_user, nasa_pass)
+                    r = requests.get(
+                        cddis_url,
+                        auth=auth,
+                        timeout=60,
+                        stream=True,
+                    )
+                    r.raise_for_status()
 
-                if local_path.stat().st_size > 0:
-                    logger.info(f"✅ IONEX скачан: {local_path.name}")
-                    return str(local_path)
+                    # Сохраняем во временный файл
+                    with open(tmp_path, "wb") as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
 
-            except Exception as e:
-                logger.debug(f"⚠️ Не удалось с {url}: {e}")
-                tmp_path.unlink(missing_ok=True)
-                continue
+                    # Распаковываем (если gzip) и переименовываем
+                    result = self._unpack(tmp_path, local_path)
+                    if result:
+                        logger.info(f"✅ IONEX (CDDIS): {local_path.name}")
+                        return result
+                    else:
+                        # Если распаковка не удалась – пробуем следующее зеркало
+                        break
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 403:
+                        logger.error("❌ Доступ запрещён (403). Проверьте логин/пароль.")
+                    else:
+                        logger.warning(f"HTTP ошибка {e.response.status_code}: {cddis_url}")
+                    if attempt < self.MAX_RETRIES - 1:
+                        time.sleep(self.RETRY_DELAY * (attempt + 1))
+                    else:
+                        tmp_path.unlink(missing_ok=True)
+                        break
+                except Exception as e:
+                    logger.debug(f"⚠️ CDDIS ошибка: {e}")
+                    if attempt < self.MAX_RETRIES - 1:
+                        time.sleep(self.RETRY_DELAY * (attempt + 1))
+                    else:
+                        tmp_path.unlink(missing_ok=True)
+                        break
+        else:
+            logger.debug("ℹ️ Нет NASA_USERNAME/NASA_PASSWORD — пропускаем CDDIS")
 
-        logger.debug(f"⚠️ Все зеркала недоступны: {date.date()}")
+        # 2. Пробуем зеркала без аутентификации (если CDDIS не помог)
+        for url in mirror_urls:
+            for attempt in range(self.MAX_RETRIES):
+                try:
+                    logger.info(f"📥 Без auth: {url}")
+                    urllib.request.urlretrieve(url, tmp_path, timeout=60)
+
+                    result = self._unpack(tmp_path, local_path)
+                    if result:
+                        logger.info(f"✅ IONEX скачан: {local_path.name}")
+                        return result
+                    else:
+                        # Если распаковка не удалась – пробуем следующее зеркало
+                        break
+                except Exception as e:
+                    logger.debug(f"⚠️ Не удалось с {url}: {e}")
+                    if attempt < self.MAX_RETRIES - 1:
+                        time.sleep(self.RETRY_DELAY * (attempt + 1))
+                    else:
+                        tmp_path.unlink(missing_ok=True)
+                        break
+
+        logger.warning(f"⚠️ Все зеркала недоступны: {date.date()}")
+        return None
+  
+    
+    def _unpack(self, tmp_path, local_path):
+        """Распаковывает gzip если нужно. Возвращает путь или None."""
+        if not tmp_path.exists():
+            return None
+
+        if tmp_path.stat().st_size == 0:
+            tmp_path.unlink(missing_ok=True)
+            return None
+
+        with open(tmp_path, "rb") as f:
+            magic = f.read(2)
+
+        if magic == b"\x1f\x8b":
+            with gzip.open(tmp_path, "rb") as f_in:
+                with open(local_path, "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            tmp_path.unlink(missing_ok=True)
+        else:
+            tmp_path.rename(local_path)
+
+        if local_path.exists() and local_path.stat().st_size > 0:
+            return str(local_path)
         return None
 
     def _parse_ionex_file(self, filepath, lat, lon, date):
