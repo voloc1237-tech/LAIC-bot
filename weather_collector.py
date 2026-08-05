@@ -13,6 +13,10 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 
+# Подавление шумных HTTP-логов
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,11 +41,12 @@ class WeatherCollector:
         # Кэш для успешных ответов
         self.cache = {}
         
-        logger.info("🌤️ WeatherCollector инициализирован")
-        if self.weatherapi_key:
-            logger.info("   ✅ WeatherAPI ключ найден")
-        else:
-            logger.info("   ℹ️ WeatherAPI ключ не найден, только Open-Meteo")
+        # ✅ ТИХО: убираем лог инициализации
+        # logger.info("🌤️ WeatherCollector инициализирован")
+        # if self.weatherapi_key:
+        #     logger.info("   ✅ WeatherAPI ключ найден")
+        # else:
+        #     logger.info("   ℹ️ WeatherAPI ключ не найден, только Open-Meteo")
     
     def _get_cache_key(self, lat, lon, start_date, end_date):
         """Создаёт ключ для кэша."""
@@ -81,7 +86,8 @@ class WeatherCollector:
         df = self._fetch_open_meteo(lat, lon, start_str, end_str)
         if not df.empty:
             self.cache[cache_key] = df.copy()
-            logger.info(f"🌡️ Open-Meteo: {len(df)} дней, средняя температура {df['temp_2m_mean'].mean():.1f}°C")
+            # ✅ ТИХО: убираем лог успеха
+            # logger.info(f"🌡️ Open-Meteo: {len(df)} дней, средняя температура {df['temp_2m_mean'].mean():.1f}°C")
             return df
         
         # 2. WeatherAPI (резерв)
@@ -89,7 +95,8 @@ class WeatherCollector:
             df = self._fetch_weatherapi(lat, lon, start_str, end_str)
             if not df.empty:
                 self.cache[cache_key] = df.copy()
-                logger.info(f"🌡️ WeatherAPI: {len(df)} дней, средняя температура {df['temp_2m_mean'].mean():.1f}°C")
+                # ✅ ТИХО: убираем лог успеха
+                # logger.info(f"🌡️ WeatherAPI: {len(df)} дней, средняя температура {df['temp_2m_mean'].mean():.1f}°C")
                 return df
         
         logger.warning(f"⚠️ Не удалось получить погоду для ({lat:.2f}, {lon:.2f})")
@@ -138,7 +145,6 @@ class WeatherCollector:
         if not self.weatherapi_key:
             return pd.DataFrame()
         
-        # WeatherAPI требует по одному дню, поэтому собираем по дням
         try:
             start = datetime.strptime(start_date, '%Y-%m-%d')
             end = datetime.strptime(end_date, '%Y-%m-%d')
@@ -184,7 +190,6 @@ class WeatherCollector:
             df = pd.DataFrame(records)
             df.set_index('date', inplace=True)
             
-            # Интерполяция пропусков
             if df['temp_2m_mean'].isnull().any():
                 df['temp_2m_mean'] = df['temp_2m_mean'].interpolate(method='time')
             if df['humidity_2m_mean'].isnull().any():
