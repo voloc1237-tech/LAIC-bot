@@ -13,12 +13,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
-from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
 import joblib
 
 logger = logging.getLogger(__name__)
@@ -83,7 +79,6 @@ class LAICFeatureExtractor:
                 'iono_historical_years': iono_data.get('n_historical_years', 0),
                 'iono_yoy_change': iono_data.get('year_over_year_change', 0),
             })
-        
         else:
             features.update({
                 'tec_anomaly_max': 0, 
@@ -92,7 +87,6 @@ class LAICFeatureExtractor:
                 'iono_historical_years': 0, 
                 'iono_yoy_change': 0,
             })
-        
         
         # 3. Спутниковые признаки
         if lst_data and isinstance(lst_data, dict):
@@ -122,14 +116,12 @@ class LAICFeatureExtractor:
                 'f107_mean': f107_df['f107'].mean() if not f107_df.empty and 'f107' in f107_df.columns else 140,
                 'f107_trend': LAICFeatureExtractor._compute_trend(f107_df) if not f107_df.empty else 0,
             })
-            
         else:
             features.update({
                 'dst_mean': -10, 'dst_std': 5, 'dst_min': -50,
                 'kp_max': 3, 'kp_mean': 1.5,
                 'f107_mean': 140, 'f107_trend': 0,
             })
-        
         
         # 5. Временные признаки
         features.update({
@@ -163,20 +155,22 @@ class LAICFeatureExtractor:
                 'temp_mean': 20, 'temp_range': 10, 'humidity_mean': 60,
             })
         
-        feature_names = [
-            'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
-            'mean_mag_30d', 'depth_mean', 'events_count_near',
-            'tec_anomaly_max', 'tec_anomaly_min', 'iono_anomaly_level',
-            'iono_historical_years', 'iono_yoy_change',
-            'lst_available', 'lst_value', 'lst_source_real',
-            'dst_mean', 'dst_std', 'dst_min', 'kp_max', 'kp_mean',
-            'f107_mean', 'f107_trend',
-            'day_of_year', 'hour', 'month',
-            'lat', 'lon', 'abs_lat', 'is_northern',
-            'temp_mean', 'temp_range', 'humidity_mean'
-        ]
-        
-        return np.array([features.get(name, 0) for name in feature_names])
+        # ⚠️ ВАЖНО: ВОЗВРАЩАЕМ СПИСОК, А НЕ МАССИВ (для совместимости)
+        return np.array([features.get(name, np.nan) for name in LAICFeatureExtractor.FEATURE_NAMES])
+    
+    # Список имён признаков (общий для всего класса)
+    FEATURE_NAMES = [
+        'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
+        'mean_mag_30d', 'depth_mean', 'events_count_near',
+        'tec_anomaly_max', 'tec_anomaly_min', 'iono_anomaly_level',
+        'iono_historical_years', 'iono_yoy_change',
+        'lst_available', 'lst_value', 'lst_source_real',
+        'dst_mean', 'dst_std', 'dst_min', 'kp_max', 'kp_mean',
+        'f107_mean', 'f107_trend',
+        'day_of_year', 'hour', 'month',
+        'lat', 'lon', 'abs_lat', 'is_northern',
+        'temp_mean', 'temp_range', 'humidity_mean'
+    ]
     
     @staticmethod
     def _get_seismic_features(
@@ -238,26 +232,18 @@ class LAICFeatureExtractor:
     
     @staticmethod
     def _compute_trend(df: pd.DataFrame) -> float:
-        """
-        Вычисление тренда временного ряда.
-        ✅ ИСПРАВЛЕНО: берём числовую колонку, не даты!
-        """
+        """Вычисление тренда временного ряда."""
         if len(df) < 3:
             return 0.0
         
-        # Ищем числовые колонки (исключаем time/datetime)
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Убираем 'time' если он случайно числовой
         numeric_cols = [c for c in numeric_cols if c not in ['time', 'timestamp']]
         
         if len(numeric_cols) == 0:
             return 0.0
         
-        # Берём первую числовую колонку (f107, dst, kp)
         y = df[numeric_cols[0]].values
-        
-        if len(set(y)) <= 1:  # Все значения одинаковые
+        if len(set(y)) <= 1:
             return 0.0
         
         x = np.arange(len(y))
@@ -274,33 +260,18 @@ class LAICFeatureExtractor:
 class EarthquakePredictor:
     """Мультимодельная система прогнозирования землетрясений."""
     
-    FEATURE_NAMES = [
-        'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
-        'mean_mag_30d', 'depth_mean', 'events_count_near',
-        'tec_anomaly_max', 'tec_anomaly_min', 'iono_anomaly_level',
-        'iono_historical_years', 'iono_yoy_change',
-        'lst_available', 'lst_value', 'lst_source_real',
-        'dst_mean', 'dst_std', 'dst_min', 'kp_max', 'kp_mean',
-        'f107_mean', 'f107_trend',
-        'day_of_year', 'hour', 'month',
-        'lat', 'lon', 'abs_lat', 'is_northern',
-        'temp_mean', 'temp_range', 'humidity_mean'
-    ]
-    
     def __init__(self, model_dir: str = "data/models"):
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
         
-        #self.preprocessor = Pipeline([
-            #('imputer', SimpleImputer(strategy='median')),
-            #('scaler', StandardScaler())
-        #])
+        # Только StandardScaler (HistGradientBoosting сам обрабатывает NaN)
+        self.scaler = StandardScaler()
+        
         self.probability_model = None
         self.magnitude_model = None
         self.time_model = None
         self.lat_model = None
         self.lon_model = None
-        self.scaler = StandardScaler()
         
         self.is_trained = False
         
@@ -351,7 +322,6 @@ class EarthquakePredictor:
     
         logger.info(f"📊 Подготовка данных: {len(significant_events)} событий")
     
-        # ✅ ИСПРАВЛЕНО: Создаём коллекторы для загрузки данных на произвольную дату
         try:
             from space_weather import SpaceWeatherCollector
             from ionosphere_collector import IonosphereCollector
@@ -377,18 +347,15 @@ class EarthquakePredictor:
                 if sample_time > datetime.now(timezone.utc):
                     continue
             
-                # ✅ ИСПРАВЛЕНО: Загружаем данные на момент sample_time
                 space_data_for_sample = None
                 iono_data_for_sample = None            
                 if collectors_available:
-                    # Космическая погода за 10 дней до sample_time
                     try:
                         start_space = sample_time - timedelta(days=10)
                         space_data_for_sample = space_collector.fetch_all_for_period(start_space, sample_time)
                     except Exception as e:
                         logger.debug(f"⚠️ Space weather error: {e}")
                 
-                    # Ионосфера на момент sample_time
                     try:
                         iono_data_for_sample = iono_collector.fetch_for_event(
                             event_time=sample_time,
@@ -405,8 +372,8 @@ class EarthquakePredictor:
                         event_time=sample_time,
                         region_data=region_df,
                         lst_data=lst_cache.get(region_name),
-                        iono_data=iono_data_for_sample,  # ✅ ИЗМЕНЕНО
-                        space_data=space_data_for_sample,  # ✅ ИЗМЕНЕНО
+                        iono_data=iono_data_for_sample,
+                        space_data=space_data_for_sample,
                         weather_data=weather_cache.get(event.get('id'))
                     )
                 
@@ -426,14 +393,13 @@ class EarthquakePredictor:
             return np.array([]), {}
     
         X = np.array(X)
-        X_scaled = self.scaler.fit_transform(X)
-        #X_scaled = self.preprocessor.fit_transform(X)
-        return X_scaled, {        'probability': np.array(y_prob),
+        return X, {
+            'probability': np.array(y_prob),
             'magnitude': np.array(y_mag),
             'time': np.array(y_time),
             'lat': np.array(y_lat),
             'lon': np.array(y_lon)
-         }
+        }
     
     
     def train(self, X: np.ndarray, y: Dict[str, np.ndarray]) -> bool:
@@ -444,67 +410,88 @@ class EarthquakePredictor:
         
         logger.info(f"🧠 Обучение на {len(X)} образцах...")
         
-        # Модель 1: Вероятность
+        # HistGradientBoosting сам обрабатывает NaN — просто масштабируем
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Модель 1: Вероятность (классификатор)
         logger.info("  📊 Обучение модели вероятности...")
-        self.probability_model = GradientBoostingClassifier(
-            n_estimators=200,
-            max_depth=5,
+        self.probability_model = HistGradientBoostingClassifier(
+            max_iter=200,
+            max_depth=6,
             learning_rate=0.1,
-            subsample=0.8,
-            random_state=42
+            max_leaf_nodes=31,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=15
         )
-        self.probability_model.fit(X, y['probability'])
+        self.probability_model.fit(X_scaled, y['probability'])
         
-        # Модель 2: Магнитуда
+        # Модель 2: Магнитуда (регрессор)
         logger.info("  📊 Обучение модели магнитуды...")
-        self.magnitude_model = GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=5,
+        self.magnitude_model = HistGradientBoostingRegressor(
+            max_iter=200,
+            max_depth=6,
             learning_rate=0.1,
-            random_state=42
+            max_leaf_nodes=31,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=15
         )
-        self.magnitude_model.fit(X, y['magnitude'])
+        self.magnitude_model.fit(X_scaled, y['magnitude'])
         
-        # Модель 3: Время
+        # Модель 3: Время (регрессор)
         logger.info("  📊 Обучение модели времени...")
-        self.time_model = GradientBoostingRegressor(
-            n_estimators=150,
-            max_depth=4,
+        self.time_model = HistGradientBoostingRegressor(
+            max_iter=150,
+            max_depth=5,
             learning_rate=0.08,
-            random_state=42
+            max_leaf_nodes=31,
+            random_state=42,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=15
         )
-        self.time_model.fit(X, y['time'])
+        self.time_model.fit(X_scaled, y['time'])
         
-        # Модель 4: Широта
+        # Модель 4: Широта (регрессор)
         logger.info("  📊 Обучение модели широты...")
-        self.lat_model = GradientBoostingRegressor(
-            n_estimators=150,
-            max_depth=4,
+        self.lat_model = HistGradientBoostingRegressor(
+            max_iter=150,
+            max_depth=5,
+            learning_rate=0.08,
+            max_leaf_nodes=31,
             random_state=42
         )
-        self.lat_model.fit(X, y['lat'])
+        self.lat_model.fit(X_scaled, y['lat'])
         
-        # Модель 5: Долгота
+        # Модель 5: Долгота (регрессор)
         logger.info("  📊 Обучение модели долготы...")
-        self.lon_model = GradientBoostingRegressor(
-            n_estimators=150,
-            max_depth=4,
+        self.lon_model = HistGradientBoostingRegressor(
+            max_iter=150,
+            max_depth=5,
+            learning_rate=0.08,
+            max_leaf_nodes=31,
             random_state=42
         )
-        self.lon_model.fit(X, y['lon'])
+        self.lon_model.fit(X_scaled, y['lon'])
         
         self.is_trained = True
         self._save_models()
         
         # Важность признаков
-        importance = pd.DataFrame({
-            'feature': self.FEATURE_NAMES,
-            'importance': self.probability_model.feature_importances_
-        }).sort_values('importance', ascending=False)
-        
-        logger.info("  📈 Топ-10 важных признаков:")
-        for _, row in importance.head(10).iterrows():
-            logger.info(f"     {row['feature']}: {row['importance']:.3f}")
+        try:
+            importance = pd.DataFrame({
+                'feature': LAICFeatureExtractor.FEATURE_NAMES,
+                'importance': self.probability_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
+            logger.info("  📈 Топ-10 важных признаков:")
+            for _, row in importance.head(10).iterrows():
+                logger.info(f"     {row['feature']}: {row['importance']:.3f}")
+        except Exception as e:
+            logger.debug(f"⚠️ Не удалось вычислить важность признаков: {e}")
         
         return True
     
@@ -522,8 +509,7 @@ class EarthquakePredictor:
         if not self.is_trained:
             logger.warning("⚠️ Модели не обучены!")
             return self._empty_prediction()
-        
-        # ✅ ИСПРАВЛЕНО: проверка DataFrame
+    
         if region_df is None:
             region_df = pd.DataFrame()
         
@@ -537,10 +523,10 @@ class EarthquakePredictor:
             space_data=space_data
         )
         
+        # Масштабируем (NaN остаются NaN — HistGradientBoosting их принимает)
         X = self.scaler.transform(features.reshape(1, -1))
-        #X = self.preprocessor.transform(features.reshape(1, -1))
        
-        prob = self.probability_model.predict_proba(X)[0][1]
+        prob = self.probability_model.predict_proba(X)[0][1] if hasattr(self.probability_model, 'predict_proba') else 0.5
         mag = self.magnitude_model.predict(X)[0]
         days = self.time_model.predict(X)[0]
         pred_lat = self.lat_model.predict(X)[0]
@@ -586,25 +572,21 @@ class EarthquakePredictor:
         total = len(lats) * len(lons)
         logger.info(f"🔮 Прогноз по сетке: {len(lats)}×{len(lons)} = {total} точек")
     
-        # ✅ ИСПРАВЛЕНО: Создаём коллекторы для загрузки свежих данных
         try:
             from space_weather import SpaceWeatherCollector
             from ionosphere_collector import IonosphereCollector
             space_collector = SpaceWeatherCollector()
             iono_collector = IonosphereCollector()
             collectors_available = True
-            logger.info("✅ Коллекторы данных загружены для прогноза")
         except ImportError as e:
             collectors_available = False
             logger.warning(f"⚠️ Коллекторы недоступны: {e}")
     
-        # Кэшируем данные космической погоды (она одинакова для всех точек)
         current_space_data = None
         if collectors_available:
             try:
                 start_space = current_time - timedelta(days=10)
                 current_space_data = space_collector.fetch_all_for_period(start_space, current_time)
-                logger.info(f"✅ Космическая погода загружена для прогноза")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка загрузки космической погоды: {e}")
     
@@ -616,7 +598,6 @@ class EarthquakePredictor:
                 if region_df is None:
                     region_df = pd.DataFrame()
             
-                # ✅ ИСПРАВЛЕНО: Загружаем ионосферу для каждой точки
                 current_iono_data = None
                 if collectors_available:
                     try:
@@ -634,8 +615,8 @@ class EarthquakePredictor:
                     current_time=current_time,
                     region_df=region_df,
                     lst_data=lst_cache.get(region_name) if lst_cache else None,
-                    iono_data=current_iono_data,  # ✅ ИСПРАВЛЕНО: передаём данные
-                    space_data=current_space_data  # ✅ ИСПРАВЛЕНО: передаём данные
+                    iono_data=current_iono_data,
+                    space_data=current_space_data
                 )
             
                 if pred['probability_m6'] >= CONFIG.PROBABILITY_THRESHOLD:
