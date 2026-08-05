@@ -14,6 +14,10 @@ import logging
 
 from utils import load_cache, save_cache, ensure_dir
 
+# Подавление шумных HTTP-логов
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,11 +70,12 @@ class USGSCollector:
         if self.cache_enabled:
             cached = load_cache(cache_key, self.cache_max_age)
             if cached:
-                logger.info(f"💾 КЭШ: использованы кэшированные данные ({len(cached)} событий)")
+                # ✅ ТИХО: убираем лог кэша
+                # logger.info(f"💾 КЭШ: использованы кэшированные данные ({len(cached)} событий)")
                 return pd.DataFrame(cached)
         
-        # Запрос к USGS
-        logger.info(f"🌐 USGS запрос: {start_time.date()} — {end_time.date()}, M≥{min_magnitude}")
+        # ✅ ТИХО: убираем лог запроса
+        # logger.info(f"🌐 USGS запрос: {start_time.date()} — {end_time.date()}, M≥{min_magnitude}")
         
         try:
             response = self.session.get(self.BASE_URL, params=params, timeout=60)
@@ -89,7 +94,8 @@ class USGSCollector:
         features = data.get('features', [])
         
         if not features:
-            logger.info("ℹ️ USGS: нет событий")
+            # ✅ ТИХО: убираем лог
+            # logger.info("ℹ️ USGS: нет событий")
             return pd.DataFrame()
         
         # Преобразуем в записи
@@ -124,16 +130,16 @@ class USGSCollector:
         # Сохраняем в кэш
         if self.cache_enabled:
             save_cache(cache_key, records)
-            logger.info(f"💾 КЭШ сохранён: {len(records)} событий")
+            # ✅ ТИХО: убираем лог
+            # logger.info(f"💾 КЭШ сохранён: {len(records)} событий")
         
         # Создаём DataFrame
         df = pd.DataFrame(records)
         df['time'] = pd.to_datetime(df['time'], unit='ms', utc=True)
         
-        logger.info(f"✅ USGS: получено {len(df)} событий")
+        # ✅ ТИХО: убираем лог
+        # logger.info(f"✅ USGS: получено {len(df)} событий")
         return df.sort_values('time').reset_index(drop=True)
-
-    # Добавьте в класс USGSCollector:
 
     def fetch_global(self, start_time, end_time, min_magnitude=4.5):
         """
@@ -155,10 +161,12 @@ class USGSCollector:
         if self.cache_enabled:
             cached = load_cache(cache_key, self.cache_max_age)
             if cached is not None:
-                logger.info(f"💾 КЭШ: глобальные данные ({len(cached)} событий)")
+                # ✅ ТИХО: убираем лог
+                # logger.info(f"💾 КЭШ: глобальные данные ({len(cached)} событий)")
                 return pd.DataFrame(cached)
     
-        logger.info(f"🌍 Глобальный USGS запрос: {start_time.date()} — {end_time.date()}, M≥{min_magnitude}")
+        # ✅ ТИХО: убираем лог
+        # logger.info(f"🌍 Глобальный USGS запрос: {start_time.date()} — {end_time.date()}, M≥{min_magnitude}")
     
         try:
             response = self.session.get(self.BASE_URL, params=params, timeout=60)
@@ -176,7 +184,7 @@ class USGSCollector:
         if not features:
             return pd.DataFrame()
     
-        # Преобразуем в записи (как в существующем fetch)
+        # Преобразуем в записи
         records = []
         for f in features:
             props = f['properties']
@@ -209,7 +217,8 @@ class USGSCollector:
     
         df = pd.DataFrame(records)
         df['time'] = pd.to_datetime(df['time'], unit='ms', utc=True)
-        logger.info(f"✅ USGS: получено {len(df)} глобальных событий")
+        # ✅ ТИХО: убираем лог
+        # logger.info(f"✅ USGS: получено {len(df)} глобальных событий")
         return df.sort_values('time').reset_index(drop=True)
     
     def fetch_for_region(self, region_config, days_back=30):
@@ -225,6 +234,7 @@ class USGSCollector:
             min_lon=region_config.get('min_lon'),
             max_lon=region_config.get('max_lon')
         )
+
 
 def collect_all_regions(settings, global_mode=True):
     """
@@ -246,7 +256,6 @@ def collect_all_regions(settings, global_mode=True):
         start = end - timedelta(days=days_back)
         df = collector.fetch_global(start, end, min_magnitude=min_mag)
         if not df.empty:
-            # Добавляем искусственный регион 'global'
             df['region_key'] = 'global'
             df['region_name'] = '🌍 Global'
             results['global'] = df
@@ -265,8 +274,5 @@ def collect_all_regions(settings, global_mode=True):
             results[key] = df
     
     total = sum(len(df) for df in results.values())
-    logger.info(f"\n{'='*50}")
-    logger.info(f"📊 ИТОГО: {total} событий по {len(results)} регионам")
+    logger.info(f"\n📊 ИТОГО: {total} событий по {len(results)} регионам")
     return results
-
-  
