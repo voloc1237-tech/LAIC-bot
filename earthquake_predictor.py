@@ -17,6 +17,9 @@ from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostin
 from sklearn.preprocessing import StandardScaler
 import joblib
 
+# Подавление шумных логов sklearn
+logging.getLogger("sklearn").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +50,19 @@ CONFIG = PredictionConfig()
 
 class LAICFeatureExtractor:
     """Извлечение признаков из LAIC-данных."""
+    
+    FEATURE_NAMES = [
+        'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
+        'mean_mag_30d', 'depth_mean', 'events_count_near',
+        'tec_anomaly_max', 'tec_anomaly_min', 'iono_anomaly_level',
+        'iono_historical_years', 'iono_yoy_change',
+        'lst_available', 'lst_value', 'lst_source_real',
+        'dst_mean', 'dst_std', 'dst_min', 'kp_max', 'kp_mean',
+        'f107_mean', 'f107_trend',
+        'day_of_year', 'hour', 'month',
+        'lat', 'lon', 'abs_lat', 'is_northern',
+        'temp_mean', 'temp_range', 'humidity_mean'
+    ]
     
     @staticmethod
     def extract_features(
@@ -155,22 +171,7 @@ class LAICFeatureExtractor:
                 'temp_mean': 20, 'temp_range': 10, 'humidity_mean': 60,
             })
         
-        # ⚠️ ВАЖНО: ВОЗВРАЩАЕМ СПИСОК, А НЕ МАССИВ (для совместимости)
         return np.array([features.get(name, np.nan) for name in LAICFeatureExtractor.FEATURE_NAMES])
-    
-    # Список имён признаков (общий для всего класса)
-    FEATURE_NAMES = [
-        'seismic_rate_30d', 'seismic_rate_7d', 'b_value', 'max_mag_30d',
-        'mean_mag_30d', 'depth_mean', 'events_count_near',
-        'tec_anomaly_max', 'tec_anomaly_min', 'iono_anomaly_level',
-        'iono_historical_years', 'iono_yoy_change',
-        'lst_available', 'lst_value', 'lst_source_real',
-        'dst_mean', 'dst_std', 'dst_min', 'kp_max', 'kp_mean',
-        'f107_mean', 'f107_trend',
-        'day_of_year', 'hour', 'month',
-        'lat', 'lon', 'abs_lat', 'is_northern',
-        'temp_mean', 'temp_range', 'humidity_mean'
-    ]
     
     @staticmethod
     def _get_seismic_features(
@@ -226,13 +227,11 @@ class LAICFeatureExtractor:
     
     @staticmethod
     def _encode_level(level: str) -> int:
-        """Кодирование уровня аномалии."""
         levels = {'normal': 0, 'low': 1, 'moderate': 2, 'high': 3, 'critical': 4}
         return levels.get(level, 0)
     
     @staticmethod
     def _compute_trend(df: pd.DataFrame) -> float:
-        """Вычисление тренда временного ряда."""
         if len(df) < 3:
             return 0.0
         
@@ -264,7 +263,6 @@ class EarthquakePredictor:
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
         
-        # Только StandardScaler (HistGradientBoosting сам обрабатывает NaN)
         self.scaler = StandardScaler()
         
         self.probability_model = None
@@ -278,7 +276,6 @@ class EarthquakePredictor:
         self._load_models()
     
     def _load_models(self):
-        """Загрузка сохранённых моделей."""
         try:
             self.probability_model = joblib.load(f"{self.model_dir}/probability_model.pkl")
             self.magnitude_model = joblib.load(f"{self.model_dir}/magnitude_model.pkl")
@@ -292,7 +289,6 @@ class EarthquakePredictor:
             logger.info("ℹ️ Сохранённых моделей не найдено, требуется обучение")
     
     def _save_models(self):
-        """Сохранение моделей."""
         joblib.dump(self.probability_model, f"{self.model_dir}/probability_model.pkl")
         joblib.dump(self.magnitude_model, f"{self.model_dir}/magnitude_model.pkl")
         joblib.dump(self.time_model, f"{self.model_dir}/time_model.pkl")
@@ -328,10 +324,9 @@ class EarthquakePredictor:
             space_collector = SpaceWeatherCollector()
             iono_collector = IonosphereCollector()
             collectors_available = True
-            logger.info("✅ Коллекторы данных загружены для обучения")
-        except ImportError as e:
+        except ImportError:
             collectors_available = False
-            logger.warning(f"⚠️ Коллекторы недоступны: {e}")
+            logger.warning("⚠️ Коллекторы недоступны")
     
         for _, event in significant_events.iterrows():
             event_time = event['time']
@@ -353,8 +348,8 @@ class EarthquakePredictor:
                     try:
                         start_space = sample_time - timedelta(days=10)
                         space_data_for_sample = space_collector.fetch_all_for_period(start_space, sample_time)
-                    except Exception as e:
-                        logger.debug(f"⚠️ Space weather error: {e}")
+                    except Exception:
+                        pass
                 
                     try:
                         iono_data_for_sample = iono_collector.fetch_for_event(
@@ -362,8 +357,8 @@ class EarthquakePredictor:
                             lat=lat, lon=lon,
                             days_before=7, days_after=0
                         )
-                    except Exception as e:
-                        logger.debug(f"⚠️ Ionosphere error: {e}")
+                    except Exception:
+                        pass
             
                 try:
                     features = LAICFeatureExtractor.extract_features(
@@ -384,8 +379,7 @@ class EarthquakePredictor:
                     y_lat.append(lat)
                     y_lon.append(lon)
                 
-                except Exception as e:
-                    logger.debug(f"⚠️ Ошибка извлечения признаков для {event.get('id')}: {e}")
+                except Exception:
                     continue
     
         if len(X) == 0:
@@ -410,11 +404,9 @@ class EarthquakePredictor:
         
         logger.info(f"🧠 Обучение на {len(X)} образцах...")
         
-        # HistGradientBoosting сам обрабатывает NaN — просто масштабируем
         X_scaled = self.scaler.fit_transform(X)
         
-        # Модель 1: Вероятность (классификатор)
-        logger.info("  📊 Обучение модели вероятности...")
+        # Модель 1: Вероятность
         self.probability_model = HistGradientBoostingClassifier(
             max_iter=200,
             max_depth=6,
@@ -427,8 +419,7 @@ class EarthquakePredictor:
         )
         self.probability_model.fit(X_scaled, y['probability'])
         
-        # Модель 2: Магнитуда (регрессор)
-        logger.info("  📊 Обучение модели магнитуды...")
+        # Модель 2: Магнитуда
         self.magnitude_model = HistGradientBoostingRegressor(
             max_iter=200,
             max_depth=6,
@@ -441,8 +432,7 @@ class EarthquakePredictor:
         )
         self.magnitude_model.fit(X_scaled, y['magnitude'])
         
-        # Модель 3: Время (регрессор)
-        logger.info("  📊 Обучение модели времени...")
+        # Модель 3: Время
         self.time_model = HistGradientBoostingRegressor(
             max_iter=150,
             max_depth=5,
@@ -455,8 +445,7 @@ class EarthquakePredictor:
         )
         self.time_model.fit(X_scaled, y['time'])
         
-        # Модель 4: Широта (регрессор)
-        logger.info("  📊 Обучение модели широты...")
+        # Модель 4: Широта
         self.lat_model = HistGradientBoostingRegressor(
             max_iter=150,
             max_depth=5,
@@ -466,8 +455,7 @@ class EarthquakePredictor:
         )
         self.lat_model.fit(X_scaled, y['lat'])
         
-        # Модель 5: Долгота (регрессор)
-        logger.info("  📊 Обучение модели долготы...")
+        # Модель 5: Долгота
         self.lon_model = HistGradientBoostingRegressor(
             max_iter=150,
             max_depth=5,
@@ -480,18 +468,18 @@ class EarthquakePredictor:
         self.is_trained = True
         self._save_models()
         
-        # Важность признаков
+        # Важность признаков (кратко)
         try:
             importance = pd.DataFrame({
                 'feature': LAICFeatureExtractor.FEATURE_NAMES,
                 'importance': self.probability_model.feature_importances_
             }).sort_values('importance', ascending=False)
             
-            logger.info("  📈 Топ-10 важных признаков:")
-            for _, row in importance.head(10).iterrows():
+            logger.info("  📈 Топ-5 важных признаков:")
+            for _, row in importance.head(5).iterrows():
                 logger.info(f"     {row['feature']}: {row['importance']:.3f}")
-        except Exception as e:
-            logger.debug(f"⚠️ Не удалось вычислить важность признаков: {e}")
+        except Exception:
+            pass
         
         return True
     
@@ -507,7 +495,6 @@ class EarthquakePredictor:
     ) -> Dict:
         """Прогноз для точки."""
         if not self.is_trained:
-            logger.warning("⚠️ Модели не обучены!")
             return self._empty_prediction()
     
         if region_df is None:
@@ -523,7 +510,6 @@ class EarthquakePredictor:
             space_data=space_data
         )
         
-        # Масштабируем (NaN остаются NaN — HistGradientBoosting их принимает)
         X = self.scaler.transform(features.reshape(1, -1))
        
         prob = self.probability_model.predict_proba(X)[0][1] if hasattr(self.probability_model, 'predict_proba') else 0.5
@@ -572,38 +558,32 @@ class EarthquakePredictor:
         total = len(lats) * len(lons)
         logger.info(f"🔮 Прогноз по сетке: {len(lats)}×{len(lons)} = {total} точек")
     
-        # 1. ЗАГРУЖАЕМ КОСМИЧЕСКУЮ ПОГОДУ ОДИН РАЗ (для всех точек)
+        # Космическая погода один раз
         current_space_data = None
         try:
             from space_weather import SpaceWeatherCollector
             space_collector = SpaceWeatherCollector()
             start_space = current_time - timedelta(days=10)
             current_space_data = space_collector.fetch_all_for_period(start_space, current_time)
-            # ✅ ТИХО: не логируем успех, только ошибки
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка загрузки космической погоды: {e}")
+            logger.warning(f"⚠️ Ошибка космической погоды: {e}")
     
-        # 2. ЗАГРУЖАЕМ ИОНОСФЕРУ ОДИН РАЗ (для центра региона)
-        # Это сильно сократит количество запросов!
+        # Ионосфера один раз (центр региона)
         current_iono_data = None
         try:
             from ionosphere_collector import IonosphereCollector
             iono_collector = IonosphereCollector()
-            
-            # Берём центр региона для ионосферы
             center_lat = (region_bounds['lat_min'] + region_bounds['lat_max']) / 2
             center_lon = (region_bounds['lon_min'] + region_bounds['lon_max']) / 2
-            
             current_iono_data = iono_collector.fetch_for_event(
                 event_time=current_time,
                 lat=center_lat, lon=center_lon,
                 days_before=7, days_after=0
             )
-            # ✅ ТИХО: не логируем успех, только ошибки
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка загрузки ионосферы: {e}")
+            logger.warning(f"⚠️ Ошибка ионосферы: {e}")
     
-        # 3. ПРОГНОЗ ПО СЕТКЕ
+        # Прогноз по сетке
         for i, lat in enumerate(lats):
             for lon in lons:
                 region_name = self._get_region_for_point(lat, lon, region_data_dict)
@@ -615,14 +595,14 @@ class EarthquakePredictor:
                     current_time=current_time,
                     region_df=region_df,
                     lst_data=lst_cache.get(region_name) if lst_cache else None,
-                    iono_data=current_iono_data,  # ✅ используем один раз загруженные данные
-                    space_data=current_space_data  # ✅ используем один раз загруженные данные
+                    iono_data=current_iono_data,
+                    space_data=current_space_data
                 )
     
                 if pred['probability_m6'] >= CONFIG.PROBABILITY_THRESHOLD:
                     predictions.append(pred)
     
-            # ✅ Логируем прогресс РЕЖЕ (каждые 20%, а не каждые 10 строк)
+            # Прогресс каждые 20%
             progress = (i + 1) / len(lats)
             if progress % 0.2 < 0.01 or i == len(lats) - 1:
                 logger.info(f"  Прогресс: {progress*100:.0f}%")
@@ -635,7 +615,6 @@ class EarthquakePredictor:
         return df
     
     def _get_region_for_point(self, lat: float, lon: float, region_data_dict: Dict) -> str:
-        """Определение ближайшего региона."""
         if not region_data_dict:
             return 'global'
         
@@ -654,7 +633,6 @@ class EarthquakePredictor:
         return best_region
     
     def _get_confidence(self, prob: float, days: float) -> str:
-        """Оценка уверенности."""
         if prob > 0.7 and days < 14:
             return 'HIGH'
         elif prob > 0.4 and days < 21:
@@ -663,7 +641,6 @@ class EarthquakePredictor:
             return 'LOW'
     
     def _estimate_radius(self, prob: float) -> int:
-        """Радиус ошибки в км."""
         if prob > 0.7:
             return 100
         elif prob > 0.4:
@@ -672,7 +649,6 @@ class EarthquakePredictor:
             return 500
     
     def _empty_prediction(self) -> Dict:
-        """Пустой прогноз."""
         return {
             'input_lat': 0.0,
             'input_lon': 0.0,
@@ -692,7 +668,6 @@ class EarthquakePredictor:
 # ═══════════════════════════════════════════════════════════════
 
 def create_risk_report(predictions_df: pd.DataFrame, top_n: int = 5) -> str:
-    """Создание текстового отчёта о рисках."""
     if predictions_df.empty:
         return "🔍 Значимых рисков не обнаружено."
     
@@ -715,10 +690,6 @@ def create_risk_report(predictions_df: pd.DataFrame, top_n: int = 5) -> str:
     
     return "\n".join(report)
 
-
-# ═══════════════════════════════════════════════════════════════
-# ТЕСТ
-# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
