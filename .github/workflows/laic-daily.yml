@@ -59,6 +59,7 @@ jobs:
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
           NASA_USERNAME: ${{ secrets.NASA_USERNAME }}
           NASA_PASSWORD: ${{ secrets.NASA_PASSWORD }}
+          WEATHERAPI_KEY: ${{ secrets.WEATHERAPI_KEY }}
           # 👇 КРИТИЧЕСКИ ВАЖНО: Включаем тестовый режим для скачивания реальных файлов IONEX
           TEST_MODE: "true"
           
