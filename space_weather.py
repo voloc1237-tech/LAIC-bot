@@ -175,7 +175,11 @@ class SpaceWeatherCollector:
                 r.raise_for_status()
                 df = _parse_swpc_kp(r.json())
                 if not df.empty:
-                    df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
+                    # В fetch_kp — добавить буфер ±1 день:
+                    df = df[(df['time'] >= start_time - timedelta(days=1)) & 
+                    (df['time'] <= end_time + timedelta(days=1))]
+
+                    #df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
                     if len(df) > 0:
                         logger.info(f"✅ Kp (SWPC): {len(df)} записей")
                         return df
