@@ -1,1 +1,4 @@
-3.11
+
+git add runtime.txt
+git commit -m "Фиксируем Python 3.11"
+git push origin main
