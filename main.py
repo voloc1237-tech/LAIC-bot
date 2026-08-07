@@ -763,7 +763,36 @@ def main():
                     alerts_sent += 1
                 except Exception as e:
                     logger.error(f"❌ Ошибка алерта {r.get('region', 'unknown')}: {e}")
-
+    # 🟢 ВСТАВЛЯЕМ СЮДА ЗАПУСК ДИАЛОГА (AIOGRAM)
+    # После отправки отчёта бот должен начать слушать нажатия на кнопки:
+    logger.info("\n" + "=" * 70)
+    logger.info("🎧 Включаю режим ожидания нажатий кнопок (Bot Interface)...")
+    logger.info("=" * 70)
+    
+    try:
+        import asyncio
+        from aiogram import Bot, Dispatcher
+        from bot_interface import register_handlers
+        
+        async def start_bot_listener():
+            bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+            bot = Bot(token=bot_token)
+            dp = Dispatcher()
+            
+            # Регистрируем все шаги диалога из bot_interface.py
+            register_handlers(dp)
+            
+            logger.info("🚀 Бот запущен в интерактивном режиме ожидания кликов.")
+            # Запускаем прослушку (polling)
+            await dp.start_polling(bot)
+            
+        # Запускаем асинхронный цикл для бота
+        asyncio.run(start_bot_listener())
+        
+    except ImportError:
+        logger.warning("⚠️ Модуль bot_interface или aiogram не найден, интерактивный режим пропущен.")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в работе интерактивного бота: {e}")
     # ═══════════════════════════════════════════════════════════════
     # 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
     # ═══════════════════════════════════════════════════════════════
