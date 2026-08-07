@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from telegram import Bot
 from telegram.constants import ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
@@ -239,9 +240,16 @@ class TelegramSender:
     
     async def send_report(self, results):
         """Отправляет ежедневный отчёт."""
-        
+#from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         message = self._format_report(results)
-        
+        # Создаем кнопки «Нужен прогноз по регионам?»
+        keyboard = [
+            [
+                InlineKeyboardButton("Да", callback_data="regions_yes"),
+                InlineKeyboardButton("Нет", callback_data="regions_no")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         # Обрезаем если слишком длинное
         if len(message) > 4000:
             message = message[:3950] + "\n\n... (сообщение обрезано)"
@@ -251,6 +259,7 @@ class TelegramSender:
                 chat_id=self.chat_id,
                 text=message,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup, # <--- Передаем кнопки
                 disable_web_page_preview=True
             )
             logger.info("✅ Отчёт отправлен в Telegram")
