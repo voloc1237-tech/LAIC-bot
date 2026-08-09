@@ -345,9 +345,9 @@ class EarthquakePredictor:
         data_end_time = events_df['time'].max() if not events_df.empty else datetime.now(timezone.utc)
     
         try:
-            from space_weather import SpaceWeatherCollector
+            from space_weather import get_collector
             from ionosphere_collector import IonosphereCollector
-            space_collector = SpaceWeatherCollector()
+            space_collector = get_collector()
             iono_collector = IonosphereCollector()
             collectors_available = True
         except ImportError:
