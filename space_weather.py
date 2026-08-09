@@ -294,10 +294,12 @@ class OMNIWebClient:
         for param in ['dst', 'kp', 'f107']:
             param_df = filtered[['time', param, 'data_source']].dropna(subset=[param])
             if not param_df.empty:
+            logger.warning(f"⚠️ OMNI: нет данных {param} после фильтрации")
                 result[param] = param_df.rename(columns={param: param})
+            
             else:
                 result[param] = pd.DataFrame()
-        
+
         return result
 
 
@@ -312,7 +314,7 @@ class SyntheticSpaceWeather:
     """
     
     @staticmethod
-    def generate_dst(start_time: datetime, end_time: datetime, freq: str = 'H') -> pd.DataFrame:
+    def generate_dst(start_time: datetime, end_time: datetime, freq: str = 'h') -> pd.DataFrame:
         logger.warning(f"🔴 СИНТЕТИЧЕСКИЙ Dst: {start_time.date()} — {end_time.date()}")
         
         dates = pd.date_range(start=start_time, end=end_time, freq=freq, tz='UTC')
@@ -458,9 +460,11 @@ class SpaceWeatherCollector:
         
         # 2. Пробуем OMNIWeb (исторические)
         omni_data = self._try_omni(start_time, end_time)
+        logger.debug(f"OMNI результат: {omni_data.keys() if omni_data else 'пусто'}")
         if 'dst' in omni_data and not omni_data['dst'].empty:
+            logger.info(f"✅ Dst из OMNI: {len(omni_data['dst'])} записей")
             return omni_data['dst']
-        
+    
         # 3. Синтетический fallback
         logger.error(f"🔴 Нет реальных данных Dst для {start_time.date()}-{end_time.date()}")
         return self.synthetic.generate_dst(start_time, end_time)
