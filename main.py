@@ -509,81 +509,103 @@ def main():
         logger.info("ℹ️ ИИ-анализ пропущен (модуль недоступен или нет данных)")
 
     # ... остальные этапы (1e, 2, 3, 4) остаются без изменений ...
-    # ═══════════════════════════════════════════════════════════════
-    # 1e. ПРОГНОЗИРОВАНИЕ (LSTM)
+        # ═══════════════════════════════════════════════════════════════
+    # 1e. ПРОГНОЗИРОВАНИЕ (LSTM) — ИСПРАВЛЕННАЯ ВЕРСИЯ
     # ═══════════════════════════════════════════════════════════════
     try:
-        from predictor import EarthquakePredictor
-        PREDICTOR_AVAILABLE = True
+        from predictor import EarthquakeLSTMPredictor
+        LSTM_AVAILABLE = True
     except ImportError:
-        PREDICTOR_AVAILABLE = False
-        logger.warning("⚠️ Модуль прогнозирования не найден")
+        LSTM_AVAILABLE = False
+        logger.warning("⚠️ Модуль LSTM-прогнозирования не найден")
     
-    if PREDICTOR_AVAILABLE and not all_events.empty:
+    if LSTM_AVAILABLE and not all_events.empty:
         logger.info("\n" + "=" * 70)
         logger.info("🔮 ЭТАП 1e: Прогнозирование (LSTM)")
         logger.info("=" * 70)
         
-        predictor = EarthquakePredictor()
+        lstm_predictor = EarthquakeLSTMPredictor(model_dir="data/models/lstm")
         
-        training_data = []
-        for _, row in all_events.iterrows():
-            mag = row.get('magnitude', 0)
-            energy = 10**(1.5 * mag + 4.8) / 4.184e12
-            kp_mean = row.get('kp_mean', 0)
-            temp_mean = row.get('temp_mean', 0)
+        # Подготовка ежедневных данных (без магнитуды в признаках!)
+        daily_df = lstm_predictor.prepare_data(all_events)
+        
+        # Проверяем, есть ли что обучать
+        if len(daily_df) >= lstm_predictor.sequence_length + 50:
             
-            training_data.append({
-                'magnitude': mag,
-                'energy': energy,
-                'kp_mean': kp_mean,
-                'temp_mean': temp_mean
-            })
-        
-        df_train = pd.DataFrame(training_data)
-        
-        if len(df_train) >= 20:
-            predictor.train(df_train, epochs=30)
+            # Обучаем только если нет сохранённой модели или принудительно
+            if not lstm_predictor.model:
+                success = lstm_predictor.train(daily_df, epochs=50)
+                if not success:
+                    logger.warning("⚠️ LSTM обучение не удалось")
             
-            prob, pred_mag = predictor.predict(df_train)
-            if prob is not None:
-                logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
-                logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
+            # Прогноз на основе последних данных
+            if lstm_predictor.model:
+                forecast = lstm_predictor.predict(daily_df)
                 
-                if prob > 0.5:
-                    status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
-                elif prob > 0.3:
-                    status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
-                else:
-                    status = "✅ Ситуация стабильна. Риск низкий."
-                
-                forecast_msg = (
-                    f"🔮 <b>ПРОГНОЗ НА БЛИЖАЙШИЕ ДНИ</b>\n"
-                    f"{'─' * 30}\n"
-                    f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
-                    f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
-                    f"Количество событий в обучении: <b>{len(df_train)}</b>\n"
-                    f"{'─' * 30}\n"
-                    f"{status}"
+                # Формируем сообщение
+                windows_str = "\n".join(
+                    f"  • {k}: {v*100:.1f}%" 
+                    for k, v in forecast['windows'].items()
                 )
                 
+                if forecast['primary_forecast']:
+                    pf = forecast['primary_forecast']
+                    main_msg = (
+                        f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
+                        f"{'─' * 30}\n"
+                        f"📅 Время прогноза: {forecast['forecast_time'][:10]}\n"
+                        f"{'─' * 30}\n"
+                        f"<b>Окно риска:</b> {pf['window']}\n"
+                        f"<b>Вероятность M≥6.0:</b> {pf['probability']*100:.1f}%\n"
+                        f"<b>Через:</b> {pf['days_to_event_min']}-{pf['days_to_event_max']} дней\n"
+                        f"{'─' * 30}\n"
+                        f"<b>Все окна:</b>\n{windows_str}\n"
+                        f"{'─' * 30}\n"
+                    )
+                    
+                    if pf['is_significant']:
+                        status = "🔴 ВЫСОКИЙ РИСК!"
+                    else:
+                        status = "🟠 Повышенное внимание"
+                    main_msg += status
+                    
+                else:
+                    main_msg = (
+                        f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
+                        f"{'─' * 30}\n"
+                        f"✅ Значимых паттернов не обнаружено\n"
+                        f"{'─' * 30}\n"
+                        f"<b>Все окна:</b>\n{windows_str}"
+                    )
+                
+                # Добавляем предупреждение о свежести данных
+                if forecast.get('data_staleness_days', 0) > 2:
+                    main_msg += f"\n\n⚠️ Данные отстают на {forecast['data_staleness_days']} дней"
+                
+                logger.info(f"🔮 LSTM прогноз:\n{main_msg.replace('<b>', '').replace('</b>', '')}")
+                
+                # Отправка в Telegram
                 try:
                     token = os.environ.get('TELEGRAM_BOT_TOKEN')
                     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
                     if token and chat_id:
                         url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
+                        payload = {'chat_id': chat_id, 'text': main_msg, 'parse_mode': 'HTML'}
                         response = requests.post(url, data=payload, timeout=30)
                         if response.status_code == 200:
-                            logger.info("✅ Прогноз отправлен в Telegram")
+                            logger.info("✅ LSTM прогноз отправлен в Telegram")
                         else:
-                            logger.error(f"❌ Ошибка отправки прогноза: {response.text}")
+                            logger.error(f"❌ Ошибка отправки: {response.text}")
                 except Exception as e:
-                    logger.error(f"❌ Ошибка отправки прогноза: {e}")
+                    logger.error(f"❌ Ошибка отправки: {e}")
+            else:
+                logger.info("ℹ️ LSTM модель не загружена и не обучена")
         else:
-            logger.info(f"ℹ️ Прогнозирование пропущено (нужно ≥20 событий, собрано {len(df_train)})")
+            logger.info(f"ℹ️ Недостаточно данных для LSTM ({len(daily_df)} < {lstm_predictor.sequence_length + 50})")
     else:
-        logger.info("ℹ️ Прогнозирование пропущено (модуль недоступен или нет данных)")
+        logger.info("ℹ️ LSTM прогнозирование пропущено")
+        
+    
         
     # ═══════════════════════════════════════════════════════════════
     # НОВОЕ: ЭТАП 1f — ПРОГНОЗИРОВАНИЕ ВРЕМЕНИ И МЕСТА
