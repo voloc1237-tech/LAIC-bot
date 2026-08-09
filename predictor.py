@@ -451,15 +451,19 @@ class EarthquakeLSTMPredictor:
             logger.warning(f"⚠️ Ошибка загрузки LSTM: {e}")
         
         return False
-    
+
     def _empty_forecast(self) -> Dict:
+        windows = {f'{w[0]}-{w[1]}d': 0.0 for w in self.HORIZON_WINDOWS}
+        windows['no_event_30d+'] = 1.0
+        
         return {
             'forecast_time': datetime.now(timezone.utc).isoformat(),
             'data_staleness_days': None,
-            'windows': {f'{w[0]}-{w[1]}d': 0.0 for w in self.HORIZON_WINDOWS},
-            'windows']['no_event_30d+'] = 1.0,
+            'windows': windows,
             'primary_forecast': None
         }
+        
+    
 
 
 # ═══════════════════════════════════════════════════════════════
