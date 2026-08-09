@@ -293,14 +293,16 @@ class OMNIWebClient:
         result = {}
         for param in ['dst', 'kp', 'f107']:
             param_df = filtered[['time', param, 'data_source']].dropna(subset=[param])
-            if not param_df.empty:
-            logger.warning(f"⚠️ OMNI: нет данных {param} после фильтрации")
-                result[param] = param_df.rename(columns={param: param})
             
-            else:
-                result[param] = pd.DataFrame()
-
+            # Проверка что данные есть
+            if param_df.empty:
+                logger.warning(f"⚠️ OMNI: нет данных {param} после фильтрации")
+            
+            result[param] = param_df.rename(columns={param: param})
+        
         return result
+
+    
 
 
 # ═══════════════════════════════════════════════════════════════
