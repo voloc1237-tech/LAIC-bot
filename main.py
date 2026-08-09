@@ -654,14 +654,29 @@ def main():
                     'lon_min': region['lon'] - 10,
                     'lon_max': region['lon'] + 10
                 }
-                
+                # Заменить в main.py этап 1f:
+
                 grid_pred = predictor.predict_grid(
                     region_bounds=region_bounds,
-                    current_time=current_time,
+                    current_time=current_time,  # ← datetime.now(timezone.utc)
                     region_data_dict=data,
                     lst_cache=lst_cache,
-                    resolution=2.0
+                    iono_cache=iono_cache,
+                    space_cache=space_cache,
+                    resolution=2.0,
+                    horizon_days=30  # ← сколько дней вперёд смотреть
                 )
+
+                # В логе будет:
+                #   +5д: 45%, M6.2  ← через 5 дней, не "-4д"
+
+                #grid_pred = predictor.predict_grid(
+                    #region_bounds=region_bounds,
+                    #current_time=current_time,
+                    #region_data_dict=data,
+                    #lst_cache=lst_cache,
+                    #resolution=2.0
+                #)
                 
                 if not grid_pred.empty:
                     all_predictions.append(grid_pred)
