@@ -609,7 +609,8 @@ def main():
                 logger.info(f"💾 Прогноз сохранён: {len(combined)} зон")
                 
                 # Критические алерты
-                high_risk = combined[combined.get('is_alert', pd.Series([False]*len(combined)))]
+                high_risk = combined[combined['is_alert'] == True] if 'is_alert' in combined.columns else pd.DataFrame()
+                #high_risk = combined[combined.get('is_alert', pd.Series([False]*len(combined)))]
                 if not high_risk.empty:
                     logger.critical(f"🚨 {len(high_risk)} зон высокого риска!")
             else:
