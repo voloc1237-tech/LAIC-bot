@@ -426,6 +426,39 @@ class EarthquakePredictor:
             'magnitude': np.array(y_mag),
             'days_before': np.array(y_days),  # ← переименовано
         }
+
+    def create_risk_report(predictions_df: pd.DataFrame, top_n: int = 5) -> str:
+        """Создаёт текстовый отчёт о рисках для Telegram."""
+        if predictions_df.empty:
+            return "🔍 Значимых рисков не обнаружено."
+    
+        report = ["🌍 <b>ПРОГНОЗ ЗЕМЛЕТРЯСЕНИЙ</b>\n"]
+        report.append(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+    
+        for i, (_, row) in enumerate(predictions_df.head(top_n).iterrows(), 1):
+            emoji = "🔴" if row.get('is_alert') else "🟠" if row.get('confidence') == 'MEDIUM' else "🟡"
+        
+            report.append(f"\n{emoji} <b>Зона риска #{i}</b>")
+            report.append(f"📍 Координаты: {row['lat']}°, {row['lon']}°")
+        
+            if 'radius_km' in row:
+                report.append(f"📏 Радиус: ±{row['radius_km']} км")
+        
+            if 'days_to_event' in row:
+                days = row['days_to_event']
+                if isinstance(days, (int, float)) and days >= 0:
+                    report.append(f"⏰ Прогноз: через {days:.0f} дней")
+        
+            report.append(f"📊 Вероятность M≥6.0: <b>{row.get('probability_m6', 0)*100:.1f}%</b>")
+            report.append(f"🎯 Магнитуда: M{row.get('predicted_magnitude', 0):.1f}")
+        
+            if 'confidence' in row:
+                report.append(f"🔒 Уверенность: {row['confidence']}")
+    
+        report.append(f"\n⚠️ Прогноз основан на LAIC-анализе и ИИ-модели")
+        report.append(f"📊 Всего зон с риском: {len(predictions_df)}")
+    
+        return "\n".join(report)
     
     
     def train(self, X: np.ndarray, y: Dict[str, np.ndarray]) -> bool:
