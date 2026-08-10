@@ -425,200 +425,253 @@ def main():
         else:
             logger.info(f"ℹ️ Недостаточно данных ({len(events_for_ai)} < 10)")
 
+
+    # ═══════════════════════════════════════════════════════════════
+    # ЭТАП 1e: ГИБРИДНОЕ ПРОГНОЗИРОВАНИЕ
+    # ═══════════════════════════════════════════════════════════════
+    try:
+        from hybrid_predictor import HybridEarthquakePredictor
+        HYBRID_AVAILABLE = True
+    except ImportError:
+        HYBRID_AVAILABLE = False
+        logger.warning("⚠️ Гибридный прогноз недоступен")
+
+    if HYBRID_AVAILABLE and not all_events.empty:
+        logger.info("\n" + "=" * 70)
+        logger.info("🔮 ЭТАП 1e: Гибридное прогнозирование (LSTM + CatBoost + XGBoost)")
+        logger.info("=" * 70)
+    
+        hybrid = HybridEarthquakePredictor(model_dir="data/models")
+    
+        # Подготовка данных для обучения
+        X, y_prob, y_mag = hybrid.prepare_tabular_features(
+            all_events, data, lst_cache, event_iono, event_space, event_weather
+        )
+    
+        if len(X) >= 30:
+            # Обучение
+            hybrid.train(X, y_prob, y_mag)
+        
+            # Прогноз на текущий момент
+            forecast = hybrid.predict(
+                all_events, data, lst_cache, event_iono, event_space, event_weather
+            )
+        
+            if forecast['probability'] > 0.2:
+                logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {forecast['probability']*100:.1f}%")
+                logger.info(f"   Магнитуда: {forecast['magnitude']:.1f}, метод: {forecast['method']}")
+            
+                # Отправка в Telegram
+                if TG_AVAILABLE and chat_id:
+                    msg = (
+                        f"🔮 <b>ГИБРИДНЫЙ ПРОГНОЗ</b>\n"
+                        f"Вероятность M≥6.0: {forecast['probability']*100:.1f}%\n"
+                        f"Прогнозируемая магнитуда: {forecast['magnitude']:.1f}\n"
+                        f"Ожидаемое время: через {forecast['days']} дней\n"
+                        f"Модель: {forecast['method']}"
+                    )
+                    # Отправка
+                    url = f"https://api.telegram.org/bot{token}/sendMessage"
+                    payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
+                    requests.post(url, data=payload, timeout=30)
+            else:
+                logger.info("ℹ️ Риск низкий, прогноз не отправлен")
+        else:
+            logger.info(f"ℹ️ Недостаточно данных для гибридного обучения ({len(X)} точек)")
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
     # ═══════════════════════════════════════════════════════════════
-    if LSTM_AVAILABLE and not all_events.empty:
-        logger.info("\n" + "=" * 70)
-        logger.info("🔮 ЭТАП 1e: LSTM прогнозирование")
-        logger.info("=" * 70)
+    #if LSTM_AVAILABLE and not all_events.empty:
+        #logger.info("\n" + "=" * 70)
+        #logger.info("🔮 ЭТАП 1e: LSTM прогнозирование")
+        #logger.info("=" * 70)
         
-        lstm_predictor = EarthquakeLSTMPredictor(model_dir="data/models/lstm")
+        #lstm_predictor = EarthquakeLSTMPredictor(model_dir="data/models/lstm")
         
         # Подготовка ежедневных данных
-        daily_df = lstm_predictor.prepare_data(all_events)
+        #daily_df = lstm_predictor.prepare_data(all_events)
         
-        if len(daily_df) >= lstm_predictor.sequence_length + 50:
+        #if len(daily_df) >= lstm_predictor.sequence_length + 50:
             
             # Обучение если нужно
-            if not lstm_predictor.model:
-                success = lstm_predictor.train(daily_df, epochs=50)
-                if not success:
-                    logger.warning("⚠️ LSTM обучение не удалось")
+            #if not lstm_predictor.model:
+                #success = lstm_predictor.train(daily_df, epochs=50)
+                #if not success:
+                    #logger.warning("⚠️ LSTM обучение не удалось")
             
             # Прогноз
-            if lstm_predictor.model:
-                forecast = lstm_predictor.predict(daily_df, current_time=effective_time)
+            #if lstm_predictor.model:
+                #forecast = lstm_predictor.predict(daily_df, current_time=effective_time)
                 
                 # Форматирование
-                windows_str = "\n".join(
-                    f"  • {k}: {v*100:.1f}%" 
-                    for k, v in forecast['windows'].items()
-                )
+                #windows_str = "\n".join(
+                    #f"  • {k}: {v*100:.1f}%" 
+                    #for k, v in forecast['windows'].items()
+                #)
                 
-                if forecast.get('primary_forecast'):
-                    pf = forecast['primary_forecast']
-                    main_msg = (
-                        f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
-                        f"{'─' * 30}\n"
-                        f"📅 Прогноз на: {forecast['forecast_time'][:10]}\n"
-                        f"{'─' * 30}\n"
-                        f"<b>Окно риска:</b> {pf['window']}\n"
-                        f"<b>Вероятность M≥6.0:</b> {pf['probability']*100:.1f}%\n"
-                        f"<b>Через:</b> {pf['days_to_event_min']}-{pf['days_to_event_max']} дней\n"
-                        f"{'─' * 30}\n"
-                        f"<b>Все окна:</b>\n{windows_str}\n"
-                    )
+                #if forecast.get('primary_forecast'):
+                    #pf = forecast['primary_forecast']
+                    #main_msg = (
+                        #f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
+                        #f"{'─' * 30}\n"
+                        #f"📅 Прогноз на: {forecast['forecast_time'][:10]}\n"
+                        #f"{'─' * 30}\n"
+                        #f"<b>Окно риска:</b> {pf['window']}\n"
+                        #f"<b>Вероятность M≥6.0:</b> {pf['probability']*100:.1f}%\n"
+                        #f"<b>Через:</b> {pf['days_to_event_min']}-{pf['days_to_event_max']} дней\n"
+                        #f"{'─' * 30}\n"
+                        #f"<b>Все окна:</b>\n{windows_str}\n"
+                    #)
                     
-                    if pf.get('is_significant'):
-                        main_msg += "\n🔴 <b>ВЫСОКИЙ РИСК!</b>"
-                    else:
-                        main_msg += "\n🟠 Повышенное внимание"
-                else:
-                    main_msg = (
-                        f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
-                        f"{'─' * 30}\n"
-                        f"✅ Значимых паттернов не обнаружено\n"
-                        f"{'─' * 30}\n"
-                        f"{windows_str}"
-                    )
+                    #if pf.get('is_significant'):
+                        #main_msg += "\n🔴 <b>ВЫСОКИЙ РИСК!</b>"
+                    #else:
+                        #main_msg += "\n🟠 Повышенное внимание"
+                #else:
+                    #main_msg = (
+                        #f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
+                        #f"{'─' * 30}\n"
+                        #f"✅ Значимых паттернов не обнаружено\n"
+                        #f"{'─' * 30}\n"
+                        #f"{windows_str}"
+                    #)
                 
                 # Предупреждение о свежести
-                if forecast.get('data_staleness_days', 0) > 2:
-                    main_msg += f"\n\n⚠️ Данные отстают на {forecast['data_staleness_days']} дней"
+                #if forecast.get('data_staleness_days', 0) > 2:
+                    #main_msg += f"\n\n⚠️ Данные отстают на {forecast['data_staleness_days']} дней"
                 
-                logger.info(f"🔮 LSTM:\n{main_msg.replace('<b>', '').replace('</b>', '')}")
+                #logger.info(f"🔮 LSTM:\n{main_msg.replace('<b>', '').replace('</b>', '')}")
                 
                 # Отправка
-                if TG_AVAILABLE and chat_id:
-                    try:
-                        url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        payload = {'chat_id': chat_id, 'text': main_msg, 'parse_mode': 'HTML'}
-                        response = requests.post(url, data=payload, timeout=30)
-                        if response.status_code == 200:
-                            logger.info("✅ LSTM прогноз отправлен")
-                        else:
-                            logger.error(f"❌ Ошибка: {response.text}")
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка отправки: {e}")
-            else:
-                logger.info("ℹ️ LSTM модель не загружена")
-        else:
-            logger.info(f"ℹ️ Недостаточно данных для LSTM ({len(daily_df)})")
+                #if TG_AVAILABLE and chat_id:
+                    #try:
+                        #url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        #payload = {'chat_id': chat_id, 'text': main_msg, 'parse_mode': 'HTML'}
+                        #response = requests.post(url, data=payload, timeout=30)
+                        #if response.status_code == 200:
+                            #logger.info("✅ LSTM прогноз отправлен")
+                        #else:
+                            #logger.error(f"❌ Ошибка: {response.text}")
+                    #except Exception as e:
+                        #logger.error(f"❌ Ошибка отправки: {e}")
+            #else:
+                #logger.info("ℹ️ LSTM модель не загружена")
+        #else:
+            #logger.info(f"ℹ️ Недостаточно данных для LSTM ({len(daily_df)})")
 
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1f: LAIC ПРОГНОЗИРОВАНИЕ (ГРАДИЕНТНЫЙ БУСТИНГ)
     # ═══════════════════════════════════════════════════════════════
-    if LAIC_PREDICTOR_AVAILABLE and len(all_events) >= 30:
-        logger.info("\n" + "=" * 70)
-        logger.info("🔮 ЭТАП 1f: LAIC прогнозирование (Gradient Boosting)")
-        logger.info("=" * 70)
+    #if LAIC_PREDICTOR_AVAILABLE and len(all_events) >= 30:
+        #logger.info("\n" + "=" * 70)
+        #logger.info("🔮 ЭТАП 1f: LAIC прогнозирование (Gradient Boosting)")
+        #logger.info("=" * 70)
         
-        from earthquake_predictor import create_risk_report
+        #from earthquake_predictor import create_risk_report
         
-        predictor = LAICPredictor(model_dir="data/models")
+        #predictor = LAICPredictor(model_dir="data/models")
         
-        iono_cache = {eid: d for eid, d in event_iono.items()}
-        space_cache = {eid: d for eid, d in event_space.items()}
-        weather_cache = {eid: d for eid, d in event_weather.items()}
+        #iono_cache = {eid: d for eid, d in event_iono.items()}
+        #space_cache = {eid: d for eid, d in event_space.items()}
+        #weather_cache = {eid: d for eid, d in event_weather.items()}
         
         # Обучение/загрузка
-        if not predictor.is_trained:
-            logger.info("🧠 Обучение LAIC моделей...")
+        #if not predictor.is_trained:
+            #logger.info("🧠 Обучение LAIC моделей...")
             
-            X, y = predictor.prepare_training_data(
-                events_df=all_events,
-                region_data_dict=data,
-                lst_cache=lst_cache,
-                iono_cache=iono_cache,
-                space_cache=space_cache,
-                weather_cache=weather_cache
-            )
+            #X, y = predictor.prepare_training_data(
+                #events_df=all_events,
+                #region_data_dict=data,
+                #lst_cache=lst_cache,
+                #iono_cache=iono_cache,
+                #space_cache=space_cache,
+                #weather_cache=weather_cache
+            #)
             
-            success = predictor.train(X, y)
-            if not success:
-                logger.warning("⚠️ LAIC обучение не удалось")
+            #success = predictor.train(X, y)
+            #if not success:
+                #logger.warning("⚠️ LAIC обучение не удалось")
         
-        if predictor.is_trained:
+        #if predictor.is_trained:
             # Прогноз по сетке — ИСПРАВЛЕНО: используем predict_grid с horizon_days
-            anomalous_regions = []
-            for region_name, df in data.items():
-                if not df.empty:
-                    last = df.iloc[0]
-                    anomalous_regions.append({
-                        'name': region_name,
-                        'lat': last['latitude'],
-                        'lon': last['longitude']
-                    })
+            #anomalous_regions = []
+            #for region_name, df in data.items():
+                #if not df.empty:
+                    #last = df.iloc[0]
+                    #anomalous_regions.append({
+                        #'name': region_name,
+                        #'lat': last['latitude'],
+                        #'lon': last['longitude']
+                    #})
             
-            all_predictions = []
+            #all_predictions = []
             
-            for region in anomalous_regions:
-                region_bounds = {
-                    'lat_min': max(-80, region['lat'] - 8),
-                    'lat_max': min(80, region['lat'] + 8),
-                    'lon_min': region['lon'] - 10,
-                    'lon_max': region['lon'] + 10
-                }
+            #for region in anomalous_regions:
+                #region_bounds = {
+                    #'lat_min': max(-80, region['lat'] - 8),
+                    #'lat_max': min(80, region['lat'] + 8),
+                    #'lon_min': region['lon'] - 10,
+                    #'lon_max': region['lon'] + 10
+                #}
                 
                 # ИСПРАВЛЕНО: правильный вызов predict_grid
-                grid_pred = predictor.predict_grid(
-                    region_bounds=region_bounds,
-                    current_time=effective_time,
-                    region_data_dict=data,
-                    lst_cache=lst_cache,
-                    iono_cache=iono_cache,
-                    space_cache=space_cache,
-                    resolution=2.0,
-                    horizon_days=30
-                )
+                #grid_pred = predictor.predict_grid(
+                    #region_bounds=region_bounds,
+                    #current_time=effective_time,
+                    #region_data_dict=data,
+                    #lst_cache=lst_cache,
+                    #iono_cache=iono_cache,
+                    #space_cache=space_cache,
+                    #resolution=2.0,
+                    #horizon_days=30
+                #)
                 
-                if not grid_pred.empty:
-                    all_predictions.append(grid_pred)
+                #if not grid_pred.empty:
+                    #all_predictions.append(grid_pred)
                     
                     # Логируем топ-3
-                    for i, (_, row) in enumerate(grid_pred.head(3).iterrows(), 1):
-                        emoji = "🔴" if row.get('is_alert') else "🟠"
-                        days = row.get('days_to_event', 'N/A')
-                        sign = "+" if isinstance(days, (int, float)) and days > 0 else ""
-                        logger.info(
-                            f"   {emoji} #{i}: "
-                            f"{row['lat']}°, {row['lon']}° | "
-                            f"M{row.get('predicted_magnitude', 0):.1f} | "
-                            f"{row.get('probability_m6', 0)*100:.0f}% | "
-                            f"{sign}{days:.0f}д"
-                        )
+                    #for i, (_, row) in enumerate(grid_pred.head(3).iterrows(), 1):
+                        #emoji = "🔴" if row.get('is_alert') else "🟠"
+                        #days = row.get('days_to_event', 'N/A')
+                        #sign = "+" if isinstance(days, (int, float)) and days > 0 else ""
+                        #logger.info(
+                            #f"   {emoji} #{i}: "
+                            #f"{row['lat']}°, {row['lon']}° | "
+                            #f"M{row.get('predicted_magnitude', 0):.1f} | "
+                            #f"{row.get('probability_m6', 0)*100:.0f}% | "
+                            #f"{sign}{days:.0f}д"
+                        #)
             
             # Объединение и отправка
-            if all_predictions:
-                combined = pd.concat(all_predictions, ignore_index=True)
-                combined = combined.sort_values('probability_m6', ascending=False)
-                combined = combined.drop_duplicates(subset=['lat', 'lon'], keep='first')
+            #if all_predictions:
+                #combined = pd.concat(all_predictions, ignore_index=True)
+                #combined = combined.sort_values('probability_m6', ascending=False)
+                #combined = combined.drop_duplicates(subset=['lat', 'lon'], keep='first')
                 
-                report_text = create_risk_report(combined, top_n=5)
+                #report_text = create_risk_report(combined, top_n=5)
                 
-                if TG_AVAILABLE:
-                    try:
-                        alert_sync(report_text)
-                        logger.info("✅ LAIC прогноз отправлен")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка отправки: {e}")
+                #if TG_AVAILABLE:
+                    #try:
+                        #alert_sync(report_text)
+                        #logger.info("✅ LAIC прогноз отправлен")
+                    #except Exception as e:
+                        #logger.warning(f"⚠️ Ошибка отправки: {e}")
                 
                 # Сохранение
-                combined.to_csv(f"data/predictions_{effective_time.strftime('%Y%m%d')}.csv", index=False)
-                logger.info(f"💾 Прогноз сохранён: {len(combined)} зон")
+                #combined.to_csv(f"data/predictions_{effective_time.strftime('%Y%m%d')}.csv", index=False)
+                #logger.info(f"💾 Прогноз сохранён: {len(combined)} зон")
                 
                 # Критические алерты
-                high_risk = combined[combined['is_alert'] == True] if 'is_alert' in combined.columns else pd.DataFrame()
-                #high_risk = combined[combined.get('is_alert', pd.Series([False]*len(combined)))]
-                if not high_risk.empty:
-                    logger.critical(f"🚨 {len(high_risk)} зон высокого риска!")
-            else:
-                logger.info("ℹ️ Значимых прогнозов нет")
-        else:
-            logger.warning("⚠️ LAIC модели не обучены")
-    else:
-        logger.info("ℹ️ LAIC прогнозирование пропущено")
+                #high_risk = combined[combined['is_alert'] == True] if 'is_alert' in combined.columns else pd.DataFrame()
+                ##high_risk = combined[combined.get('is_alert', pd.Series([False]*len(combined)))] не включать!
+                #if not high_risk.empty:
+                    #logger.critical(f"🚨 {len(high_risk)} зон высокого риска!")
+            #else:
+                #logger.info("ℹ️ Значимых прогнозов нет")
+        #else:
+            #logger.warning("⚠️ LAIC модели не обучены")
+    #else:
+        #logger.info("ℹ️ LAIC прогнозирование пропущено")
 
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 2: LAIC-АНАЛИЗ
