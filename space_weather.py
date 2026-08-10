@@ -316,7 +316,7 @@ class SyntheticSpaceWeather:
     """
     
     @staticmethod
-    def generate_dst(start_time: datetime, end_time: datetime, freq: str = 'h') -> pd.DataFrame:
+    def generate_dst(start_time: datetime, end_time: datetime, freq: str = 'H') -> pd.DataFrame:
         logger.warning(f"🔴 СИНТЕТИЧЕСКИЙ Dst: {start_time.date()} — {end_time.date()}")
         
         dates = pd.date_range(start=start_time, end=end_time, freq=freq, tz='UTC')
@@ -339,7 +339,7 @@ class SyntheticSpaceWeather:
         return pd.DataFrame(records)
     
     @staticmethod
-    def generate_kp(start_time: datetime, end_time: datetime, freq: str = '3H') -> pd.DataFrame:
+    def generate_kp(start_time: datetime, end_time: datetime, freq: str = 'H') -> pd.DataFrame:
         logger.warning(f"🔴 СИНТЕТИЧЕСКИЙ Kp: {start_time.date()} — {end_time.date()}")
         
         dates = pd.date_range(start=start_time, end=end_time, freq=freq, tz='UTC')
