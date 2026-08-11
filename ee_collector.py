@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ee_collector.py — Google Earth Engine + исторический fallback (2000-2023)
+ee_collector.py — Google Earth Engine + кэш реальных данных + исторический fallback
+Стратегия: реальные данные → кэш (последние 3 дня) → исторические 2000-2023 → None
 """
 
 import ee
@@ -16,16 +17,25 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+# ═══════════════════════════════════════════════════════════════
+# GEE INITIALIZER — SINGLETON
+# ═══════════════════════════════════════════════════════════════
+
 class GEEInitializer:
-    """Универсальная инициализация Google Earth Engine."""
+    """Универсальная инициализация Google Earth Engine (однократная)."""
+    
+    _initialized = False
     
     @staticmethod
     def init():
-        """Пробует все способы инициализации GEE."""
+        if GEEInitializer._initialized:
+            logger.debug("✅ Earth Engine уже инициализирован")
+            return True
         
         # Способ 1: Уже аутентифицировано
         try:
             ee.Initialize(project=os.environ.get('EARTH_ENGINE_PROJECT'))
+            GEEInitializer._initialized = True
             logger.info("✅ EE инициализирован (существующая аутентификация)")
             return True
         except Exception:
@@ -37,6 +47,7 @@ class GEEInitializer:
             try:
                 credentials = ee.ServiceAccountCredentials('', key_path)
                 ee.Initialize(credentials, project=os.environ.get('EARTH_ENGINE_PROJECT'))
+                GEEInitializer._initialized = True
                 logger.info("✅ EE инициализирован (Service Account, файл)")
                 return True
             except Exception as e:
@@ -53,6 +64,7 @@ class GEEInitializer:
                 try:
                     credentials = ee.ServiceAccountCredentials('', temp_path)
                     ee.Initialize(credentials, project=os.environ.get('EARTH_ENGINE_PROJECT'))
+                    GEEInitializer._initialized = True
                     logger.info("✅ EE инициализирован (Service Account, base64)")
                     return True
                 finally:
@@ -75,6 +87,7 @@ class GEEInitializer:
                     quota_project_id=stored.get("project"),
                 )
                 ee.Initialize(credentials=credentials)
+                GEEInitializer._initialized = True
                 logger.info("✅ EE инициализирован (OAuth2)")
                 return True
             except Exception as e:
@@ -82,6 +95,39 @@ class GEEInitializer:
         
         logger.error("❌ Не удалось инициализировать Earth Engine!")
         return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# КЭШ ПОСЛЕДНИХ РЕАЛЬНЫХ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
+_last_real_data = {
+    'lst': None,   # (value, timestamp, source)
+    'so2': None,
+    'co': None,
+    'ch4': None,
+}
+
+def _save_last_real(param: str, value: float, source: str):
+    """Сохраняет последнее реальное значение в кэш."""
+    global _last_real_data
+    _last_real_data[param] = (value, datetime.now(timezone.utc), source)
+
+def _get_last_real(param: str, max_age_days: int = 3):
+    """
+    Возвращает последнее реальное значение, его возраст (в днях) и источник.
+    Если данные старше max_age_days, возвращает None.
+    """
+    global _last_real_data
+    entry = _last_real_data.get(param)
+    if entry is None:
+        return None, None, None
+    value, timestamp, source = entry
+    age = (datetime.now(timezone.utc) - timestamp).days
+    if age > max_age_days:
+        logger.debug(f"⚠️ {param.upper()} данные устарели ({age} дн.), пропускаю")
+        return None, None, None
+    return value, age, source
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -99,7 +145,6 @@ class HistoricalGasData:
     @staticmethod
     def _get_seasonal_factor(month: int, lat: float) -> float:
         """Сезонный коэффициент (зима-лето)."""
-        # Северное полушарие: зима — минимум, лето — максимум
         if lat > 0:
             return 1 + 0.3 * np.sin((month - 3) * np.pi / 6)
         else:
@@ -107,37 +152,18 @@ class HistoricalGasData:
     
     @staticmethod
     def _get_hemisphere_factor(lat: float) -> float:
-        """Коэффициент полушария."""
-        # Северное полушарие больше загрязнено
         return 1.2 if lat > 0 else 0.8
     
     @staticmethod
     def get_historical_so2(lat: float, lon: float, month: int, day: int) -> dict:
-        """
-        Исторические SO2 данные (2000-2023).
-        Основано на трендах: снижение после 2005 из-за очистных сооружений.
-        """
         np.random.seed(int(abs(lat * 100 + lon)) + month * 100 + day)
-        
-        # Базовое значение (моль/м²)
-        base_so2 = 0.0002
-        
-        # Сезонность
+        base = 0.0002
         seasonal = HistoricalGasData._get_seasonal_factor(month, lat)
-        
-        # Полушарие
         hemi = HistoricalGasData._get_hemisphere_factor(lat)
-        
-        # Тренд: снижение SO2 после 2005
-        # В среднем за 2000-2023
-        trend = 0.8  # Среднее между высоким 2000 и низким 2023
-        
-        # Случайность
+        trend = 0.8
         noise = np.random.normal(1, 0.2)
-        
-        so2 = base_so2 * seasonal * hemi * trend * noise
-        so2 = max(0.00001, min(0.01, so2))  # Разумные пределы
-        
+        so2 = base * seasonal * hemi * trend * noise
+        so2 = max(0.00001, min(0.01, so2))
         return {
             'so2': round(so2, 6),
             'unit': 'mol/m²',
@@ -148,31 +174,15 @@ class HistoricalGasData:
     
     @staticmethod
     def get_historical_co(lat: float, lon: float, month: int, day: int) -> dict:
-        """
-        Исторические CO данные (2000-2023).
-        """
         np.random.seed(int(abs(lat * 100 + lon)) + month * 100 + day + 1)
-        
-        # Базовое значение (моль/м²)
-        base_co = 0.02
-        
-        # Сезонность (зимой больше — отопление)
+        base = 0.02
         seasonal = 1 + 0.4 * np.cos((month - 1) * np.pi / 6) if lat > 0 else 1
-        
-        # Полушарие
         hemi = HistoricalGasData._get_hemisphere_factor(lat)
-        
-        # Тренд: медленное снижение
         trend = 0.9
-        
-        # Города имеют больше CO
-        urban_factor = 1.5 if abs(lat) < 60 else 1.0
-        
+        urban = 1.5 if abs(lat) < 60 else 1.0
         noise = np.random.normal(1, 0.15)
-        
-        co = base_co * seasonal * hemi * trend * urban_factor * noise
+        co = base * seasonal * hemi * trend * urban * noise
         co = max(0.001, min(0.1, co))
-        
         return {
             'co': round(co, 6),
             'unit': 'mol/m²',
@@ -183,31 +193,14 @@ class HistoricalGasData:
     
     @staticmethod
     def get_historical_ch4(lat: float, lon: float, month: int, day: int) -> dict:
-        """
-        Исторические CH4 данные (2000-2023).
-        Рост из-за сельского хозяйства и энергетики.
-        """
         np.random.seed(int(abs(lat * 100 + lon)) + month * 100 + day + 2)
-        
-        # Базовое значение (ppb)
-        base_ch4 = 1800
-        
-        # Сезонность (лето — больше выбросов из-за разложения)
+        base = 1800
         seasonal = 1 + 0.1 * np.sin((month - 6) * np.pi / 6)
-        
-        # Полушарие
         hemi = HistoricalGasData._get_hemisphere_factor(lat)
-        
-        # Тренд: рост CH4
-        trend = 1.1  # Рост ~10% за 20 лет
-        
-        # Влажные тропики — больше CH4
+        trend = 1.1
         tropical = 1.3 if abs(lat) < 23.5 else 1.0
-        
         noise = np.random.normal(1, 0.05)
-        
-        ch4 = base_ch4 * seasonal * hemi * trend * tropical * noise
-        
+        ch4 = base * seasonal * hemi * trend * tropical * noise
         return {
             'ch4': round(ch4, 2),
             'unit': 'ppb',
@@ -218,13 +211,31 @@ class HistoricalGasData:
 
 
 # ═══════════════════════════════════════════════════════════════
-# NEW: ERA5 2m TEMPERATURE FALLBACK FOR LST
-# INSERT AFTER HistoricalGasData class, BEFORE get_lst_data()
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ═══════════════════════════════════════════════════════════════
+
+def safe_get_info(sample, property_name: str):
+    """Безопасное получение значения из GEE."""
+    if sample is None:
+        return None, 'Sample is None'
+    try:
+        raw = sample.get(property_name)
+        if raw is None:
+            return None, 'Property not found'
+        value = raw.getInfo()
+        if value is None:
+            return None, 'getInfo returned None'
+        return value, None
+    except Exception as e:
+        return None, str(e)
+
+
+# ═══════════════════════════════════════════════════════════════
+# ERA5 И CH4 SPATIAL AVERAGE
+# ═══════════════════════════════════════════════════════════════
+
 def get_era5_2m_temperature(lat, lon, date_start, date_end):
-    """
-    ERA5 2m temperature — используем обычный ERA5 вместо ERA5-LAND для океана.
-    """
+    """ERA5 2m temperature — используем обычный ERA5 для океана."""
     point = ee.Geometry.Point([lon, lat])
     
     # Пробуем ERA5-LAND (высокое разрешение, только суша)
@@ -234,7 +245,6 @@ def get_era5_2m_temperature(lat, lon, date_start, date_end):
         .filterBounds(point)
     
     count_land = collection_land.size().getInfo()
-    
     if count_land > 0:
         temp = collection_land.mean().sample(point, 10000).first()
         value, error = safe_get_info(temp, 'temperature_2m')
@@ -254,31 +264,18 @@ def get_era5_2m_temperature(lat, lon, date_start, date_end):
     
     temp = collection.mean().sample(point, 27830).first()
     value, error = safe_get_info(temp, 'mean_2m_air_temperature')
-    
     if error:
         return None
-    
     return round(value - 273.15, 2)
-  
-    logger.info(f"✅ ERA5 t2m: {temp_celsius:.2f}°C (fallback for LST)")
-    return round(temp_celsius, 2)
 
-
-# ═══════════════════════════════════════════════════════════════
-# NEW: CH4 WITH SPATIAL AVERAGING
-# INSERT AFTER get_era5_2m_temperature(), BEFORE get_lst_data()
-# ═══════════════════════════════════════════════════════════════
 
 def get_ch4_spatial_average(lat: float, lon: float, date_start: str, date_end: str, radius_km: int = 50):
-    """
-    CH4 with spatial averaging around epicenter.
-    Uses circular buffer to aggregate available pixels.
-    """
+    """CH4 with spatial averaging around epicenter."""
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
-    region = point.buffer(radius_km * 1000)  # Convert km to meters
+    region = point.buffer(radius_km * 1000)
     
     collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CH4') \
         .select('CH4_column_volume_mixing_ratio_dry_air') \
@@ -290,11 +287,10 @@ def get_ch4_spatial_average(lat: float, lon: float, date_start: str, date_end: s
         logger.warning(f"⚠️ Нет CH4 данных в радиусе {radius_km}км")
         return None, 0
     
-    # Spatial mean over region
     mean_ch4 = collection.mean().reduceRegion(
         reducer=ee.Reducer.mean(),
         geometry=region,
-        scale=7000  # TROPOMI CH4 resolution ~7km
+        scale=7000
     ).get('CH4_column_volume_mixing_ratio_dry_air')
     
     if mean_ch4 is None or mean_ch4.getInfo() is None:
@@ -306,262 +302,282 @@ def get_ch4_spatial_average(lat: float, lon: float, date_start: str, date_end: s
 
 
 # ═══════════════════════════════════════════════════════════════
-# GEE ФУНКЦИИ С HISTORICAL FALLBACK
+# ОСНОВНЫЕ ФУНКЦИИ С КЭШИРОВАНИЕМ
 # ═══════════════════════════════════════════════════════════════
-
-def safe_get_info(sample, property_name: str):
-    """Безопасное получение значения из GEE."""
-    if sample is None:
-        return None, 'Sample is None'
-    
-    try:
-        raw = sample.get(property_name)
-        if raw is None:
-            return None, 'Property not found'
-        
-        value = raw.getInfo()
-        if value is None:
-            return None, 'getInfo returned None'
-        
-        return value, None
-        
-    except Exception as e:
-        return None, str(e)
-
 
 def get_lst_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    LST из MODIS с проверками + ERA5 fallback.
+    LST: MODIS → ERA5 → кэш → None
     """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    # Try MODIS 8-day composite first (fewer gaps)
+    # 1. MODIS 8-day
     collection = ee.ImageCollection("MODIS/061/MOD11A2") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('LST_Day_1km')
     
     count = collection.size().getInfo()
-    
     if count > 0:
         mean_lst = collection.mean()
         sample = mean_lst.sample(point, 1000).first()
-        
         value, error = safe_get_info(sample, 'LST_Day_1km')
-        
         if not error:
             lst_celsius = (value * 0.02) - 273.15
             logger.info(f"✅ MODIS LST (8-day): {lst_celsius:.2f}°C")
-            return {
+            result = {
                 'lst_celsius': round(lst_celsius, 2),
                 'count': count,
                 'source': 'MODIS_8day',
                 'period': f"{date_start} to {date_end}"
             }
+            _save_last_real('lst', result['lst_celsius'], 'MODIS_8day')
+            return result
     
-    # Fallback 1: MODIS daily
+    # 2. MODIS daily
     collection_daily = ee.ImageCollection("MODIS/061/MOD11A1") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('LST_Day_1km')
     
     count_daily = collection_daily.size().getInfo()
-    
     if count_daily > 0:
         mean_lst = collection_daily.mean()
         sample = mean_lst.sample(point, 1000).first()
-        
         value, error = safe_get_info(sample, 'LST_Day_1km')
-        
         if not error:
             lst_celsius = (value * 0.02) - 273.15
             logger.info(f"✅ MODIS LST (daily): {lst_celsius:.2f}°C")
-            return {
+            result = {
                 'lst_celsius': round(lst_celsius, 2),
                 'count': count_daily,
                 'source': 'MODIS_daily',
                 'period': f"{date_start} to {date_end}"
             }
+            _save_last_real('lst', result['lst_celsius'], 'MODIS_daily')
+            return result
     
-    # Fallback 2: ERA5 2m temperature
+    # 3. ERA5 proxy
     logger.warning(f"⚠️ MODIS LST недоступен, пробуем ERA5 t2m...")
     era5_temp = get_era5_2m_temperature(lat, lon, date_start, date_end)
-    
     if era5_temp is not None:
-        return {
+        result = {
             'lst_celsius': era5_temp,
             'count': 0,
             'source': 'ERA5_t2m_proxy',
             'period': f"{date_start} to {date_end}",
             'note': 'ERA5 2m temperature as LST proxy'
         }
+        _save_last_real('lst', result['lst_celsius'], 'ERA5_t2m_proxy')
+        return result
     
-    # All failed
-    logger.error(f"❌ Нет LST данных (MODIS + ERA5)")
+    # 4. Кэш последних реальных
+    cached_val, age, src = _get_last_real('lst', max_age_days=3)
+    if cached_val is not None:
+        logger.warning(f"⚠️ LST: используются кэшированные данные ({age} дн. назад) из {src}")
+        return {
+            'lst_celsius': cached_val,
+            'count': 0,
+            'source': f'cache_{age}d',
+            'period': f"{date_start} to {date_end}",
+            'note': f'Cached from {src}'
+        }
+    
+    # 5. Всё failed
+    logger.error(f"❌ Нет LST данных (MODIS + ERA5 + кэш)")
     return {
         'lst_celsius': None,
         'count': 0,
         'source': 'unavailable',
-        'error': 'No LST from MODIS or ERA5',
+        'error': 'No LST from any source',
         'period': f"{date_start} to {date_end}"
     }
 
 
 def get_so2_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    SO2 из Sentinel-5P → fallback на исторические данные.
+    SO2: Sentinel-5P → кэш → исторические
     """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    # Пробуем реальные данные Sentinel-5P
+    # 1. Sentinel-5P реальные
     collection = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_SO2") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('SO2_column_number_density')
     
     count = collection.size().getInfo()
-    
     if count > 0:
         mean_so2 = collection.mean()
         sample = mean_so2.sample(point, 1000).first()
-        
         value, error = safe_get_info(sample, 'SO2_column_number_density')
-        
         if not error:
             logger.info(f"✅ SO2 реальные данные: {value}")
-            return {
+            result = {
                 'so2': round(value, 6),
                 'count': count,
                 'unit': 'mol/m²',
                 'source': 'sentinel5p_real'
             }
+            _save_last_real('so2', result['so2'], 'sentinel5p')
+            return result
     
-    # ═══════════════════════════════════════════════════════════════
-    # FALLBACK: Исторические данные
-    # ═══════════════════════════════════════════════════════════════
+    # 2. Кэш последних реальных
+    cached_val, age, src = _get_last_real('so2', max_age_days=3)
+    if cached_val is not None:
+        logger.warning(f"⚠️ SO2: используются кэшированные данные ({age} дн. назад) из {src}")
+        return {
+            'so2': cached_val,
+            'count': 0,
+            'unit': 'mol/m²',
+            'source': f'cache_{age}d',
+            'requested_period': f"{date_start} to {date_end}",
+            'note': f'Cached from {src}'
+        }
+    
+    # 3. Исторические
     logger.warning(f"⚠️ Реальные SO2 недоступны, использую исторические 2000-2023")
-    
-    # Парсим дату
     dt = datetime.strptime(date_start, "%Y-%m-%d")
-    
     hist = HistoricalGasData.get_historical_so2(lat, lon, dt.month, dt.day)
     hist['count'] = 0
     hist['requested_period'] = f"{date_start} to {date_end}"
-    
     return hist
 
 
 def get_co_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    CO из Sentinel-5P → fallback на исторические данные.
+    CO: Sentinel-5P → кэш → исторические
     """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    # Пробуем реальные данные
+    # 1. Sentinel-5P реальные
     collection = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CO") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('CO_column_number_density')
     
     count = collection.size().getInfo()
-    
     if count > 0:
         mean_co = collection.mean()
         sample = mean_co.sample(point, 1000).first()
-        
         value, error = safe_get_info(sample, 'CO_column_number_density')
-        
         if not error:
             logger.info(f"✅ CO реальные данные: {value}")
-            return {
+            result = {
                 'co': round(value, 6),
                 'count': count,
                 'unit': 'mol/m²',
                 'source': 'sentinel5p_real'
             }
+            _save_last_real('co', result['co'], 'sentinel5p')
+            return result
     
-    # FALLBACK: Исторические данные
+    # 2. Кэш последних реальных
+    cached_val, age, src = _get_last_real('co', max_age_days=3)
+    if cached_val is not None:
+        logger.warning(f"⚠️ CO: используются кэшированные данные ({age} дн. назад) из {src}")
+        return {
+            'co': cached_val,
+            'count': 0,
+            'unit': 'mol/m²',
+            'source': f'cache_{age}d',
+            'requested_period': f"{date_start} to {date_end}",
+            'note': f'Cached from {src}'
+        }
+    
+    # 3. Исторические
     logger.warning(f"⚠️ Реальные CO недоступны, использую исторические 2000-2023")
-    
     dt = datetime.strptime(date_start, "%Y-%m-%d")
-    
     hist = HistoricalGasData.get_historical_co(lat, lon, dt.month, dt.day)
     hist['count'] = 0
     hist['requested_period'] = f"{date_start} to {date_end}"
-    
     return hist
 
 
 def get_ch4_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    CH4 из Sentinel-5P → spatial average fallback → historical fallback.
+    CH4: Sentinel-5P → spatial avg → кэш → исторические
     """
     if not GEEInitializer.init():
         raise RuntimeError("Earth Engine не инициализирован!")
     
     point = ee.Geometry.Point([lon, lat])
     
-    # Attempt 1: Point data (original method)
+    # 1. Sentinel-5P point
     collection = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CH4") \
         .filterBounds(point) \
         .filterDate(date_start, date_end) \
         .select('CH4_column_volume_mixing_ratio_dry_air')
     
     count = collection.size().getInfo()
-    
     if count > 0:
         mean_ch4 = collection.mean()
         sample = mean_ch4.sample(point, 1000).first()
-        
         value, error = safe_get_info(sample, 'CH4_column_volume_mixing_ratio_dry_air')
-        
         if not error:
             logger.info(f"✅ CH4 реальные данные: {value}")
-            return {
+            result = {
                 'ch4': round(value, 2),
                 'count': count,
                 'unit': 'ppb',
                 'source': 'sentinel5p_real'
             }
+            _save_last_real('ch4', result['ch4'], 'sentinel5p')
+            return result
     
-    # Attempt 2: Spatial average fallback
+    # 2. Spatial average
     logger.warning(f"⚠️ CH4 point data недоступен, пробуем spatial average...")
     spatial_value, spatial_count = get_ch4_spatial_average(lat, lon, date_start, date_end, radius_km=50)
-    
     if spatial_value is not None:
-        return {
+        result = {
             'ch4': spatial_value,
             'count': spatial_count,
             'unit': 'ppb',
             'source': 'sentinel5p_spatial_avg'
         }
+        _save_last_real('ch4', result['ch4'], 'sentinel5p_spatial')
+        return result
     
-    # FALLBACK: Исторические данные
+    # 3. Кэш последних реальных
+    cached_val, age, src = _get_last_real('ch4', max_age_days=3)
+    if cached_val is not None:
+        logger.warning(f"⚠️ CH4: используются кэшированные данные ({age} дн. назад) из {src}")
+        return {
+            'ch4': cached_val,
+            'count': 0,
+            'unit': 'ppb',
+            'source': f'cache_{age}d',
+            'requested_period': f"{date_start} to {date_end}",
+            'note': f'Cached from {src}'
+        }
+    
+    # 4. Исторические
     logger.warning(f"⚠️ Реальные CH4 недоступны, использую исторические 2000-2023")
-    
     dt = datetime.strptime(date_start, "%Y-%m-%d")
-    
     hist = HistoricalGasData.get_historical_ch4(lat, lon, dt.month, dt.day)
     hist['count'] = 0
     hist['requested_period'] = f"{date_start} to {date_end}"
-    
     return hist
 
 
+# ═══════════════════════════════════════════════════════════════
+# ОБЩАЯ ФУНКЦИЯ ДЛЯ ВСЕХ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
 def get_all_gee_data(lat: float, lon: float, date_start: str, date_end: str):
     """
-    Получить все спутниковые данные (LST, SO2, CO, CH4).
+    Получить все спутниковые данные (LST, SO2, CO, CH4) с кэшированием.
     """
-    logger.info(f"🛰️ Сбор GEE данных для ({lat}, {lon}) за {date_start}-{date_end}")
+    logger.info(f"🛰️ Сбор GEE данных для ({lat:.4f}, {lon:.4f}) за {date_start}-{date_end}")
     
     results = {
         'lst': get_lst_data(lat, lon, date_start, date_end),
@@ -571,23 +587,22 @@ def get_all_gee_data(lat: float, lon: float, date_start: str, date_end: str):
     }
     
     # Сводка
-    real_count = sum(1 for v in results.values() if v.get('source', '').startswith('sentinel'))
-    proxy_count = sum(1 for v in results.values() if 'proxy' in v.get('source', ''))
+    real_count = sum(1 for v in results.values() if 'real' in v.get('source', ''))
+    cache_count = sum(1 for v in results.values() if v.get('source', '').startswith('cache_'))
     hist_count = sum(1 for v in results.values() if 'historical' in v.get('source', ''))
     
-    logger.info(f"✅ GEE данные: {real_count} реальных, {proxy_count} proxy, {hist_count} исторических")
+    logger.info(f"✅ GEE данные: {real_count} реальных, {cache_count} кэшированных, {hist_count} исторических")
     
     return results
 
 
-# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 # ТЕСТ
-# ═════════════════════════════════════════════════════==
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
-    # Тест: Токио, сегодня (будет fallback на исторические)
     result = get_all_gee_data(
         lat=35.6895,
         lon=139.6917,
@@ -598,4 +613,5 @@ if __name__ == "__main__":
     print(f"\nРезультат:")
     for key, value in result.items():
         source = value.get('source', 'unknown')
-        print(f"  {key}: {value.get(key, 'N/A')} (source: {source})")
+        val = value.get(key, 'N/A')
+        print(f"  {key}: {val} (source: {source})")
