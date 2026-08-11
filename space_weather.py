@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 space_weather.py — Сбор космической погоды: Dst, Kp, F10.7
-Стратегия: в первую очередь реальные данные, даже устаревшие.
+Стратегия: SWPC → альтернативные источники → OMNIWeb → кэш → синтетика
 """
 
 import logging
@@ -23,16 +23,24 @@ logger = logging.getLogger(__name__)
 # КОНФИГУРАЦИЯ
 # ═══════════════════════════════════════════════════════════════
 
+# NOAA SWPC (свежие данные)
 SWPC_DST_URL = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
 SWPC_KP_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 SWPC_F107_URL = "https://services.swpc.noaa.gov/products/solar-radio-flux.json"
 
+# Альтернативные источники
+# Dst: WDC Kyoto (realtime + provisional)
 WDC_KYOTO_DST_REALTIME = "https://wdc.kugi.kyoto-u.ac.jp/dst_realtime/{year}{month:02d}/index.html"
 WDC_KYOTO_DST_PROV = "https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month:02d}/{year}{month:02d}.dst"
 
-OMNIWEB_FTP = "spdf.gsfc.nasa.gov"
-OMNIWEB_PATH = "/pub/data/omni/low_res_omni/"
-OMNIWEB_WEB = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
+# Kp: GFZ Potsdam (исторический архив, но тоже реальные данные)
+GFZ_KP_URL = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
+
+# F10.7: LASP (университет Колорадо)
+LASP_F107_URL = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
+
+# OMNIWeb (исторические данные, задержка 2-6 месяцев) — используем прямой HTTP
+OMNIWEB_BASE = "https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/"
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "space_weather_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -57,7 +65,7 @@ def _save_last_real(param: str, df: pd.DataFrame):
     elif param == 'f107':
         _last_real_f107 = (df.copy(), datetime.now(timezone.utc))
 
-def _get_last_real(param: str) -> Optional[pd.DataFrame]:
+def _get_last_real(param: str) -> Optional[Tuple[pd.DataFrame, int]]:
     """Возвращает последние реальные данные и задержку в днях."""
     global _last_real_dst, _last_real_kp, _last_real_f107
     cache = {'dst': _last_real_dst, 'kp': _last_real_kp, 'f107': _last_real_f107}.get(param)
@@ -117,74 +125,118 @@ def _parse_swpc_f107(data: list) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 # ═══════════════════════════════════════════════════════════════
-# WDC KYOTO DST (REALTIME + PROVISIONAL)
+# ПАРСЕРЫ АЛЬТЕРНАТИВНЫХ ИСТОЧНИКОВ
 # ═══════════════════════════════════════════════════════════════
 
-def _fetch_wdc_dst_realtime(year: int, month: int) -> Optional[pd.DataFrame]:
-    """Парсит HTML-таблицу Real-time Dst с WDC Kyoto."""
-    url = WDC_KYOTO_DST_REALTIME.format(year=year, month=month)
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        html = resp.text
-        # Ищем таблицу с Dst значениями (упрощённый парсинг)
-        # Формат: строки с датами и значениями
-        # Пример: <tr><td>2026-04-01 00:00</td><td>-12</td>...
-        import re
-        pattern = r'<tr>\s*<td>(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})</td>\s*<td>(-?\d+)</td>'
-        matches = re.findall(pattern, html)
-        records = []
-        for time_str, dst_val in matches:
-            dt = pd.to_datetime(time_str).tz_localize('UTC')
-            records.append({'time': dt, 'dst': float(dst_val)})
-        if records:
-            df = pd.DataFrame(records)
-            logger.info(f"✅ WDC Real-time Dst: {len(df)} записей за {year}-{month:02d}")
-            return df
-    except Exception as e:
-        logger.debug(f"WDC Real-time Dst недоступен: {e}")
-    return None
+def _parse_gfz_kp(text: str) -> pd.DataFrame:
+    """Парсинг Kp из GFZ Potsdam (фиксированная ширина)."""
+    records = []
+    for line in text.splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) < 14:
+            continue
+        try:
+            year = int(parts[0])
+            month = int(parts[1])
+            day = int(parts[2])
+            for i in range(8):
+                kp_val = float(parts[5+i]) if parts[5+i] else None
+                if kp_val is not None:
+                    hour = i * 3
+                    dt = datetime(year, month, day, hour, 0, tzinfo=timezone.utc)
+                    records.append({'time': dt, 'kp': kp_val})
+        except (ValueError, IndexError):
+            continue
+    return pd.DataFrame(records)
 
-def _fetch_wdc_dst_provisional(year: int, month: int) -> Optional[pd.DataFrame]:
-    """Скачивает и парсит Provisional Dst (фиксированная ширина)."""
-    url = WDC_KYOTO_DST_PROV.format(year=year, month=month)
+def _parse_lasp_f107(text: str) -> pd.DataFrame:
+    """Парсинг F10.7 из LASP (фиксированная ширина)."""
+    records = []
+    for line in text.splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            year = int(parts[0])
+            day_of_year = int(parts[1])
+            f107 = float(parts[2]) if parts[2] else None
+            if f107 is not None:
+                dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1)
+                records.append({'time': dt, 'f107': f107})
+        except (ValueError, IndexError):
+            continue
+    return pd.DataFrame(records)
+
+# ═══════════════════════════════════════════════════════════════
+# OMNIWEB (исторические данные)
+# ═══════════════════════════════════════════════════════════════
+
+def _fetch_omni_year(year: int) -> Optional[pd.DataFrame]:
+    """Скачивает OMNI данные за год и возвращает DataFrame."""
+    url = f"{OMNIWEB_BASE}/omni2_{year}.dat"
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         lines = resp.text.splitlines()
         records = []
         for line in lines:
-            if not line.strip() or line.startswith('#'):
+            if len(line) < 50:
                 continue
             try:
-                year_str = line[2:6].strip()
-                day_of_year = int(line[7:10].strip())
-                hour = int(line[11:13].strip())
-                if not year_str:
-                    continue
-                year_val = int(year_str)
-                # 24 значения по 4 символа
-                dst_vals = []
-                for i in range(24):
-                    pos = 20 + i * 4
-                    val_str = line[pos:pos+4].strip()
-                    if val_str and val_str != '9999':
-                        dst_vals.append(float(val_str))
-                    else:
-                        dst_vals.append(None)
-                for i, dst_val in enumerate(dst_vals):
-                    if dst_val is not None:
-                        dt = datetime(year_val, 1, 1, hour, 0, 0, tzinfo=timezone.utc) + timedelta(days=day_of_year-1, hours=i)
-                        records.append({'time': dt, 'dst': dst_val})
+                year_val = int(line[0:4].strip())
+                doy = int(line[4:7].strip())
+                hour = int(line[7:10].strip())
+                dt = datetime(year_val, 1, 1, hour, 0, 0, tzinfo=timezone.utc) + timedelta(days=doy - 1)
+                dst = float(line[13:19].strip()) if line[13:19].strip() and line[13:19].strip() != '99999' else None
+                kp = float(line[25:31].strip()) / 10 if line[25:31].strip() and line[25:31].strip() != '999' else None
+                f107 = float(line[31:37].strip()) / 10 if line[31:37].strip() and line[31:37].strip() != '9999' else None
+                if dst is not None or kp is not None or f107 is not None:
+                    record = {'time': dt, 'data_source': 'OMNIWeb'}
+                    if dst is not None:
+                        record['dst'] = dst
+                    if kp is not None:
+                        record['kp'] = kp
+                    if f107 is not None:
+                        record['f107'] = f107
+                    records.append(record)
             except (ValueError, IndexError):
                 continue
         if records:
             df = pd.DataFrame(records)
-            logger.info(f"✅ WDC Provisional Dst: {len(df)} записей за {year}-{month:02d}")
+            logger.info(f"✅ OMNIWeb {year}: {len(df)} записей")
             return df
     except Exception as e:
-        logger.debug(f"WDC Provisional Dst недоступен: {e}")
+        logger.debug(f"OMNIWeb {year} недоступен: {e}")
     return None
+
+def _fetch_omni_range(start_time: datetime, end_time: datetime) -> Dict[str, pd.DataFrame]:
+    """Загружает OMNI данные за диапазон лет."""
+    start_year = start_time.year
+    end_year = end_time.year
+    all_dfs = []
+    for year in range(start_year, end_year + 1):
+        df = _fetch_omni_year(year)
+        if df is not None:
+            all_dfs.append(df)
+        time.sleep(0.5)
+    if not all_dfs:
+        return {}
+    combined = pd.concat(all_dfs, ignore_index=True)
+    combined = combined.sort_values('time').reset_index(drop=True)
+    mask = (combined['time'] >= start_time) & (combined['time'] <= end_time)
+    filtered = combined[mask]
+    result = {}
+    for param in ['dst', 'kp', 'f107']:
+        if param in filtered.columns:
+            subset = filtered[['time', param, 'data_source']].dropna(subset=[param])
+            if not subset.empty:
+                subset = subset.rename(columns={param: param})
+                result[param] = subset
+    return result
 
 # ═══════════════════════════════════════════════════════════════
 # ОСНОВНЫЕ МЕТОДЫ КОЛЛЕКТОРА
@@ -192,7 +244,7 @@ def _fetch_wdc_dst_provisional(year: int, month: int) -> Optional[pd.DataFrame]:
 
 class SpaceWeatherCollector:
     """
-    Сборщик космической погоды с приоритетом на реальные данные.
+    Сборщик космической погоды с резервными источниками.
     """
 
     def __init__(self):
@@ -214,155 +266,191 @@ class SpaceWeatherCollector:
             logger.debug(f"SWPC недоступен: {e}")
         return None
 
-    def _try_omni(self, start_time: datetime, end_time: datetime) -> Dict[str, pd.DataFrame]:
-        """OMNIWeb — только для исторических данных (до 2025)."""
-        if not self._omni_available:
-            return {}
-        try:
-            from space_weather_omni import OMNIWebClient  # импортируем из отдельного модуля
-            client = OMNIWebClient()
-            result = client.fetch_range(start_time, end_time)
-            if any(not df.empty for df in result.values()):
-                logger.info("✅ OMNIWeb: загружены исторические данные")
-                return result
-            else:
-                return {}
-        except Exception as e:
-            logger.warning(f"⚠️ OMNIWeb недоступен: {e}")
-            self._omni_available = False
-            return {}
-
-    def _generate_synthetic(self, param: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """Синтетические данные — самый крайний случай."""
-        logger.error(f"🔴 Нет реальных данных {param.upper()}, использую синтетику")
-        if param == 'dst':
-            return self._synthetic_dst(start_time, end_time)
-        elif param == 'kp':
-            return self._synthetic_kp(start_time, end_time)
-        else:
-            return self._synthetic_f107(start_time, end_time)
-
+    # ---------- Dst ----------
     def fetch_dst(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """Dst: SWPC → WDC → кэш → OMNI → синтетика."""
         # 1. SWPC
         df = self._try_swpc(SWPC_DST_URL, _parse_swpc_dst, start_time, end_time)
         if df is not None and not df.empty:
             _save_last_real('dst', df)
             return df
 
-        # 2. WDC Kyoto (Realtime + Provisional)
+        # 2. WDC Kyoto (realtime + provisional)
         for year in range(start_time.year, end_time.year + 1):
             for month in range(1, 13):
                 if (year, month) < (start_time.year, start_time.month):
                     continue
                 if (year, month) > (end_time.year, end_time.month):
                     break
-                # Realtime
-                df = _fetch_wdc_dst_realtime(year, month)
-                if df is not None and not df.empty:
-                    df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
-                    if not df.empty:
-                        df['data_source'] = 'WDC_Realtime'
-                        _save_last_real('dst', df)
-                        return df
-                # Provisional (если Realtime нет)
-                df = _fetch_wdc_dst_provisional(year, month)
-                if df is not None and not df.empty:
-                    df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
-                    if not df.empty:
-                        df['data_source'] = 'WDC_Provisional'
-                        _save_last_real('dst', df)
-                        return df
+                for url_func, src_name in [
+                    (lambda y, m: WDC_KYOTO_DST_REALTIME.format(year=y, month=m), 'WDC_Realtime'),
+                    (lambda y, m: WDC_KYOTO_DST_PROV.format(year=y, month=m), 'WDC_Provisional')
+                ]:
+                    try:
+                        resp = requests.get(url_func(year, month), timeout=30)
+                        if resp.status_code != 200:
+                            continue
+                        # Парсинг (упрощённый)
+                        if 'realtime' in src_name.lower():
+                            # HTML парсинг
+                            html = resp.text
+                            pattern = r'<tr>\s*<td>(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})</td>\s*<td>(-?\d+)</td>'
+                            matches = re.findall(pattern, html)
+                            records = []
+                            for time_str, dst_val in matches:
+                                dt = pd.to_datetime(time_str).tz_localize('UTC')
+                                records.append({'time': dt, 'dst': float(dst_val)})
+                            if records:
+                                df = pd.DataFrame(records)
+                                df['data_source'] = src_name
+                                df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
+                                if not df.empty:
+                                    _save_last_real('dst', df)
+                                    return df
+                        else:
+                            # Provisional: fixed-width
+                            lines = resp.text.splitlines()
+                            records = []
+                            for line in lines:
+                                if not line.strip() or line.startswith('#'):
+                                    continue
+                                try:
+                                    year_str = line[2:6].strip()
+                                    day_of_year = int(line[7:10].strip())
+                                    hour = int(line[11:13].strip())
+                                    year_val = int(year_str)
+                                    dst_vals = []
+                                    for i in range(24):
+                                        pos = 20 + i * 4
+                                        val_str = line[pos:pos+4].strip()
+                                        if val_str and val_str != '9999':
+                                            dst_vals.append(float(val_str))
+                                        else:
+                                            dst_vals.append(None)
+                                    for i, dst_val in enumerate(dst_vals):
+                                        if dst_val is not None:
+                                            dt = datetime(year_val, 1, 1, hour, 0, 0, tzinfo=timezone.utc) + timedelta(days=day_of_year-1, hours=i)
+                                            records.append({'time': dt, 'dst': dst_val})
+                                except (ValueError, IndexError):
+                                    continue
+                            if records:
+                                df = pd.DataFrame(records)
+                                df['data_source'] = src_name
+                                df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
+                                if not df.empty:
+                                    _save_last_real('dst', df)
+                                    return df
+                    except Exception as e:
+                        logger.debug(f"WDC {src_name} недоступен: {e}")
 
-        # 3. Кэш последних реальных
-        cached, delay = _get_last_real('dst')
-        if cached is not None:
-            # Обрезаем по запрошенному диапазону (если данные есть за этот период)
-            df_cached = cached[(cached['time'] >= start_time) & (cached['time'] <= end_time)]
-            if not df_cached.empty:
-                logger.warning(f"⚠️ Dst: используются кэшированные данные (задержка {delay} дн.)")
-                df_cached['data_source'] = 'CACHE'
-                return df_cached
-            else:
-                # Если данных за нужный период нет — берём всё, что есть, и предупреждаем
-                logger.warning(f"⚠️ Dst: кэшированные данные не покрывают запрошенный период, возвращаю последние {len(cached)} записей")
-                cached['data_source'] = 'CACHE_PARTIAL'
-                return cached
-
-        # 4. OMNIWeb (исторические)
-        omni = self._try_omni(start_time, end_time)
+        # 3. OMNIWeb (исторические)
+        omni = _fetch_omni_range(start_time, end_time)
         if 'dst' in omni and not omni['dst'].empty:
             df = omni['dst']
-            df['data_source'] = 'OMNIWeb'
             _save_last_real('dst', df)
             return df
 
-        # 5. Синтетика
-        return self._generate_synthetic('dst', start_time, end_time)
+        # 4. Кэш последних реальных
+        cached, delay = _get_last_real('dst')
+        if cached is not None:
+            df_cached = cached[(cached['time'] >= start_time) & (cached['time'] <= end_time)]
+            if not df_cached.empty:
+                logger.warning(f"⚠️ Dst: используются кэшированные данные (задержка {delay} дн.)")
+                return df_cached
+            else:
+                logger.warning(f"⚠️ Dst: кэшированные данные не покрывают запрошенный период, возвращаю последние {len(cached)} записей")
+                return cached
 
+        # 5. Синтетика
+        logger.error(f"🔴 Нет реальных данных Dst, использую синтетику")
+        return self._synthetic_dst(start_time, end_time)
+
+    # ---------- Kp ----------
     def fetch_kp(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """Kp: SWPC → кэш → OMNI → синтетика."""
         # 1. SWPC
         df = self._try_swpc(SWPC_KP_URL, _parse_swpc_kp, start_time, end_time)
         if df is not None and not df.empty:
             _save_last_real('kp', df)
             return df
 
-        # 2. Кэш
+        # 2. GFZ Potsdam (альтернатива)
+        try:
+            resp = requests.get(GFZ_KP_URL, timeout=30)
+            resp.raise_for_status()
+            df = _parse_gfz_kp(resp.text)
+            if not df.empty:
+                df['data_source'] = 'GFZ'
+                df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
+                if not df.empty:
+                    _save_last_real('kp', df)
+                    return df
+        except Exception as e:
+            logger.debug(f"GFZ Kp недоступен: {e}")
+
+        # 3. OMNIWeb
+        omni = _fetch_omni_range(start_time, end_time)
+        if 'kp' in omni and not omni['kp'].empty:
+            df = omni['kp']
+            _save_last_real('kp', df)
+            return df
+
+        # 4. Кэш
         cached, delay = _get_last_real('kp')
         if cached is not None:
             df_cached = cached[(cached['time'] >= start_time) & (cached['time'] <= end_time)]
             if not df_cached.empty:
                 logger.warning(f"⚠️ Kp: используются кэшированные данные (задержка {delay} дн.)")
-                df_cached['data_source'] = 'CACHE'
                 return df_cached
             else:
                 logger.warning(f"⚠️ Kp: кэшированные данные не покрывают запрошенный период, возвращаю последние {len(cached)} записей")
-                cached['data_source'] = 'CACHE_PARTIAL'
                 return cached
 
-        # 3. OMNIWeb
-        omni = self._try_omni(start_time, end_time)
-        if 'kp' in omni and not omni['kp'].empty:
-            df = omni['kp']
-            df['data_source'] = 'OMNIWeb'
-            _save_last_real('kp', df)
-            return df
+        # 5. Синтетика
+        logger.error(f"🔴 Нет реальных данных Kp, использую синтетику")
+        return self._synthetic_kp(start_time, end_time)
 
-        # 4. Синтетика
-        return self._generate_synthetic('kp', start_time, end_time)
-
+    # ---------- F10.7 ----------
     def fetch_f107(self, start_time: datetime, end_time: datetime) -> pd.DataFrame:
-        """F10.7: SWPC → кэш → OMNI → синтетика."""
         # 1. SWPC
         df = self._try_swpc(SWPC_F107_URL, _parse_swpc_f107, start_time, end_time)
         if df is not None and not df.empty:
             _save_last_real('f107', df)
             return df
 
-        # 2. Кэш
+        # 2. LASP (альтернатива)
+        try:
+            resp = requests.get(LASP_F107_URL, timeout=30)
+            resp.raise_for_status()
+            df = _parse_lasp_f107(resp.text)
+            if not df.empty:
+                df['data_source'] = 'LASP'
+                df = df[(df['time'] >= start_time) & (df['time'] <= end_time)]
+                if not df.empty:
+                    _save_last_real('f107', df)
+                    return df
+        except Exception as e:
+            logger.debug(f"LASP F10.7 недоступен: {e}")
+
+        # 3. OMNIWeb
+        omni = _fetch_omni_range(start_time, end_time)
+        if 'f107' in omni and not omni['f107'].empty:
+            df = omni['f107']
+            _save_last_real('f107', df)
+            return df
+
+        # 4. Кэш
         cached, delay = _get_last_real('f107')
         if cached is not None:
             df_cached = cached[(cached['time'] >= start_time) & (cached['time'] <= end_time)]
             if not df_cached.empty:
                 logger.warning(f"⚠️ F10.7: используются кэшированные данные (задержка {delay} дн.)")
-                df_cached['data_source'] = 'CACHE'
                 return df_cached
             else:
                 logger.warning(f"⚠️ F10.7: кэшированные данные не покрывают запрошенный период, возвращаю последние {len(cached)} записей")
-                cached['data_source'] = 'CACHE_PARTIAL'
                 return cached
 
-        # 3. OMNIWeb
-        omni = self._try_omni(start_time, end_time)
-        if 'f107' in omni and not omni['f107'].empty:
-            df = omni['f107']
-            df['data_source'] = 'OMNIWeb'
-            _save_last_real('f107', df)
-            return df
-
-        # 4. Синтетика
-        return self._generate_synthetic('f107', start_time, end_time)
+        # 5. Синтетика
+        logger.error(f"🔴 Нет реальных данных F10.7, использую синтетику")
+        return self._synthetic_f107(start_time, end_time)
 
     def fetch_all_for_period(self, start_time: datetime, end_time: datetime) -> Dict[str, pd.DataFrame]:
         logger.info(f"🛰️ Space weather: {start_time.date()} — {end_time.date()}")
@@ -408,9 +496,8 @@ class SpaceWeatherCollector:
             records.append({'time': dt, 'f107': round(f107, 1), 'data_source': 'SYNTHETIC'})
         return pd.DataFrame(records)
 
-
 # ═══════════════════════════════════════════════════════════════
-# SINGLETON
+# SINGLETON И ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ═══════════════════════════════════════════════════════════════
 
 _collector_instance = None
@@ -422,29 +509,21 @@ def get_collector() -> SpaceWeatherCollector:
     return _collector_instance
 
 def get_data_quality(start_time: datetime, end_time: datetime) -> Dict[str, Dict]:
-    """
-    Возвращает отчёт о качестве данных за указанный период.
-    """
     collector = get_collector()
     data = collector.fetch_all_for_period(start_time, end_time)
-    
     report = {}
     for param, df in data.items():
         if df.empty:
             report[param] = {'status': 'NO_DATA', 'real_pct': 0.0}
             continue
-        
         total = len(df)
         real = len(df[df['data_source'] != 'SYNTHETIC'])
         real_pct = real / total * 100
-        
         status = 'GOOD' if real_pct > 80 else 'PARTIAL' if real_pct > 20 else 'SYNTHETIC'
-        
         report[param] = {
             'status': status,
             'real_pct': real_pct,
             'records': total,
             'sources': df['data_source'].value_counts().to_dict()
         }
-    
     return report
