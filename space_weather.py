@@ -420,3 +420,31 @@ def get_collector() -> SpaceWeatherCollector:
     if _collector_instance is None:
         _collector_instance = SpaceWeatherCollector()
     return _collector_instance
+
+def get_data_quality(start_time: datetime, end_time: datetime) -> Dict[str, Dict]:
+    """
+    Возвращает отчёт о качестве данных за указанный период.
+    """
+    collector = get_collector()
+    data = collector.fetch_all_for_period(start_time, end_time)
+    
+    report = {}
+    for param, df in data.items():
+        if df.empty:
+            report[param] = {'status': 'NO_DATA', 'real_pct': 0.0}
+            continue
+        
+        total = len(df)
+        real = len(df[df['data_source'] != 'SYNTHETIC'])
+        real_pct = real / total * 100
+        
+        status = 'GOOD' if real_pct > 80 else 'PARTIAL' if real_pct > 20 else 'SYNTHETIC'
+        
+        report[param] = {
+            'status': status,
+            'real_pct': real_pct,
+            'records': total,
+            'sources': df['data_source'].value_counts().to_dict()
+        }
+    
+    return report
