@@ -717,6 +717,8 @@ def main():
         logger.info("🎨 ЭТАП 4: Визуализация")
         logger.info("=" * 70)
 
+        period_days = settings.get('analysis', {}).get('history_days', 30)
+        
         for region_name, df in data.items():
             if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
