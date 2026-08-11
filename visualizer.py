@@ -108,10 +108,15 @@ def plot_magnitude_series(df: pd.DataFrame, region_name: str) -> bytes:
         interval = 3
     else:
         interval = 1
-    
+
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
-    ax2.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+    # Ограничиваем количество меток на оси X до 10
+    import matplotlib.ticker as mticker
+    ax2.xaxis.set_major_locator(mticker.MaxNLocator(10))
     plt.xticks(rotation=30)
+    #ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
+    #ax2.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+    #plt.xticks(rotation=30)
     
     plt.tight_layout()
     buf = io.BytesIO()
