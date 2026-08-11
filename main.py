@@ -721,7 +721,7 @@ def main():
             if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
 
-            # 1. Временной ряд (уже есть)
+            # 1. Временной ряд
             try:
                 img = plot_magnitude_series(df, region_name)
                 if img:
@@ -731,9 +731,9 @@ def main():
             except Exception as e:
                 logger.error(f"❌ PNG {region_name}: {e}")
 
-            # 2. График аномалий (если есть anomaly_data)
-            if anomaly_data is not None and not anomaly_data.empty:
-                region_anomalies = anomaly_data[anomaly_data['region'] == region_name]
+            # 2. График аномалий (если есть anomaly_df)
+            if anomaly_df is not None and not anomaly_df.empty:
+                region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
                 if not region_anomalies.empty:
                     try:
                         img_anom = create_anomaly_plot(region_anomalies, region_name)
@@ -742,20 +742,13 @@ def main():
                     except Exception as e:
                         logger.error(f"❌ Аномалии {region_name}: {e}")
 
-            # 3. График солнечной активности (если есть space_data для региона)
-            # Для этого нужно сохранить space_data для региона, но у нас event_space глобальный.
-            # Можно выбрать последнее событие или агрегировать.
-            # Упрощённо: берём первое событие региона
+            # 3. График солнечной активности
             if event_space:
-                # Находим event_id для региона
-                region_events = df['id'].tolist()
-                for eid in region_events:
+                space_data = None
+                for eid in df['id'].tolist():
                     if eid in event_space:
                         space_data = event_space[eid]
-                        # Берём первое событие с space_data
                         break
-                else:
-                    space_data = None
                 if space_data:
                     try:
                         img_solar = create_solar_activity_plot(space_data, region_name, df['magnitude'].max())
@@ -764,15 +757,13 @@ def main():
                     except Exception as e:
                         logger.error(f"❌ Солнечная {region_name}: {e}")
 
-            # 4. График ионосферы (если есть iono_data)
+            # 4. График ионосферы
             if event_iono:
-                region_events = df['id'].tolist()
-                for eid in region_events:
+                iono_data = None
+                for eid in df['id'].tolist():
                     if eid in event_iono:
                         iono_data = event_iono[eid]
                         break
-                else:
-                    iono_data = None
                 if iono_data:
                     try:
                         img_iono = create_iono_anomaly_plot(iono_data, region_name)
@@ -781,15 +772,16 @@ def main():
                     except Exception as e:
                         logger.error(f"❌ Ионосфера {region_name}: {e}")
 
-            # 5. HTML-отчёт (уже есть)
+            # 5. HTML-отчёт
             try:
+                region_anomalies = anomaly_df[anomaly_df['region'] == region_name] if (anomaly_df is not None and not anomaly_df.empty) else None
                 html_path = create_interactive_report(
                     region_name, df,
                     lst_data=lst_cache.get(region_name),
                     period_days=period_days,
                     iono_data=iono_data,
                     space_data=space_data,
-                    anomaly_data=region_anomalies if anomaly_data is not None else None
+                    anomaly_data=region_anomalies
                 )
                 if html_path:
                     caption = f"📄 {region_name} – интерактивный отчёт"
