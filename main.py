@@ -718,6 +718,10 @@ def main():
         logger.info("=" * 70)
 
         period_days = settings.get('analysis', {}).get('history_days', 30)
+
+
+        space_data = None
+        iono_data = None
         
         for region_name, df in data.items():
             if not isinstance(df, pd.DataFrame) or df.empty:
