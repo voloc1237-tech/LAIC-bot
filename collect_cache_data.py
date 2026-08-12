@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — сбор всех данных за 2024 год в один JSON-файл
-Запускать через GitHub Actions (один раз).
+collect_cache_data.py — сбор реальных данных за 2024 год.
+Глобальные индексы (Kp, Dst, F10.7) загружаются один раз за год.
+Синтетика НЕ используется — если данных нет, событие пропускается.
 """
 
 import os
@@ -15,13 +16,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import yaml
+import requests
 
-# Импорты модулей бота (предполагается, что они лежат в той же папке)
+# Импорты модулей бота
 from data_collector import USGSCollector
 from weather_collector import WeatherCollector
 from ionosphere_collector import IonosphereCollector
-from space_weather import SpaceWeatherCollector
 from ee_collector import get_lst_data, GEEInitializer
 
 logging.basicConfig(
@@ -31,20 +33,241 @@ logging.basicConfig(
 )
 logger = logging.getLogger('CacheCollector')
 
+
+# ----- Глобальные функции загрузки годовых рядов -----
+
+def load_kp_2024():
+    """Загружает Kp (GFZ) за 2024 год."""
+    url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        records = []
+        for line in resp.text.splitlines():
+            if not line.strip() or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) < 14:
+                continue
+            try:
+                year = int(parts[0])
+                if year != 2024:
+                    continue
+                month = int(parts[1])
+                day = int(parts[2])
+                for i in range(8):
+                    kp_val = float(parts[5+i]) if parts[5+i] else None
+                    if kp_val is not None:
+                        hour = i*3
+                        dt = datetime(year, month, day, hour, 0, tzinfo=timezone.utc)
+                        records.append({'time': dt, 'kp': kp_val})
+            except:
+                continue
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ Kp: загружено {len(df)} записей за 2024")
+            return df
+    except Exception as e:
+        logger.error(f"Ошибка загрузки Kp: {e}")
+    return pd.DataFrame()
+
+
+def load_dst_2024():
+    """Загружает Dst (Kyoto WDC) за 2024 год (provisional или final)."""
+    # Пытаемся загрузить помесячно, так как архив разбит по месяцам
+    all_records = []
+    for month in range(1, 13):
+        year = 2024
+        month_str = f"{month:02d}"
+        # Сначала пробуем provisional
+        url = f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month_str}/{year}{month_str}.dst"
+        # Если нет, пробуем final
+        try:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code != 200:
+                # пробуем final
+                url = f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month_str}.dst"
+                resp = requests.get(url, timeout=30)
+                if resp.status_code != 200:
+                    logger.warning(f"Dst за {year}-{month_str} не найден")
+                    continue
+        except:
+            continue
+
+        # Парсим файл
+        lines = resp.text.splitlines()
+        for line in lines:
+            if not line.strip() or line.startswith('#'):
+                continue
+            try:
+                year_str = line[2:6].strip()
+                day_of_year = int(line[7:10].strip())
+                # час не критичен, будем брать среднее за день
+                # Но можно взять все 24 значения
+                values = []
+                for i in range(24):
+                    pos = 20 + i*4
+                    val_str = line[pos:pos+4].strip()
+                    if val_str and val_str != '9999':
+                        values.append(float(val_str))
+                if values:
+                    # усредним за день
+                    dst_mean = np.mean(values)
+                    dt = datetime(int(year_str), 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year-1)
+                    all_records.append({'time': dt, 'dst': dst_mean})
+            except:
+                continue
+
+    if all_records:
+        df = pd.DataFrame(all_records)
+        df.set_index('time', inplace=True)
+        df.sort_index(inplace=True)
+        logger.info(f"✅ Dst: загружено {len(df)} записей за 2024")
+        return df
+    else:
+        logger.error("❌ Dst за 2024 не найден")
+        return pd.DataFrame()
+
+
+def load_f107_2024():
+    """Загружает F10.7 (LASP) за 2024 год."""
+    url = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        records = []
+        for line in resp.text.splitlines():
+            if not line.strip() or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                year = int(parts[0])
+                if year != 2024:
+                    continue
+                day_of_year = int(parts[1])
+                f107_val = float(parts[2]) if parts[2] else None
+                if f107_val is not None:
+                    dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year-1)
+                    records.append({'time': dt, 'f107': f107_val})
+            except:
+                continue
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ F10.7: загружено {len(df)} записей за 2024")
+            return df
+    except Exception as e:
+        logger.error(f"Ошибка загрузки F10.7: {e}")
+    return pd.DataFrame()
+
+
+# ----- Вспомогательная функция для получения признаков события -----
+
+def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
+    """
+    Собирает признаки для одного события.
+    Возвращает словарь или None, если данных недостаточно.
+    """
+    # 1. Kp — ближайшее по времени (интерполяция или поиск)
+    if kp_df.empty:
+        return None
+    # Ищем ближайшее значение Kp (по времени)
+    # Преобразуем event_time в Timestamp для совместимости
+    event_ts = pd.Timestamp(event_time).tz_convert('UTC')
+    # Находим индекс ближайшего времени
+    idx = kp_df.index.get_indexer([event_ts], method='nearest')[0]
+    if idx == -1:
+        return None
+    kp_mean = float(kp_df.iloc[idx]['kp'])
+
+    # 2. Dst
+    if dst_df.empty:
+        return None
+    idx = dst_df.index.get_indexer([event_ts], method='nearest')[0]
+    if idx == -1:
+        return None
+    dst_mean = float(dst_df.iloc[idx]['dst'])
+
+    # 3. F10.7
+    if f107_df.empty:
+        return None
+    # F10.7 — ежедневные, так что возьмём за день события (округлим до даты)
+    date = event_ts.date()
+    # Ищем индекс с этой датой (может быть несколько, но у нас ежедневные)
+    mask = dst_df.index.date == date  # или отдельно для f107
+    if not mask.any():
+        return None
+    f107_mean = float(f107_df[mask]['f107'].mean())  # если несколько, усредним
+
+    # 4. Погода (Open-Meteo)
+    weather = WeatherCollector()
+    try:
+        wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
+        if wdf.empty:
+            return None
+        temp_mean = float(wdf['temp_2m_mean'].mean())
+        humidity_mean = float(wdf['humidity_2m_mean'].mean())
+    except:
+        return None
+
+    # 5. LST (MODIS/ERA5)
+    try:
+        start_lst = (event_time - timedelta(days=7)).strftime('%Y-%m-%d')
+        end_lst = event_time.strftime('%Y-%m-%d')
+        lst_data = get_lst_data(lat, lon, start_lst, end_lst)
+        lst_celsius = lst_data['lst_celsius'] if lst_data else None
+        if lst_celsius is None:
+            return None
+    except:
+        return None
+
+    # 6. TEC (ионосфера)
+    iono = IonosphereCollector(cache_dir="data/ionex_cache")
+    try:
+        tec_df = iono.fetch_tec_for_point(lat, lon,
+                                          event_time - timedelta(days=7),
+                                          event_time + timedelta(days=3))
+        if tec_df.empty:
+            return None
+        tec_mean = float(tec_df['tec_value'].mean())
+    except:
+        return None
+
+    return {
+        'lst_celsius': lst_celsius,
+        'temp_mean': temp_mean,
+        'humidity_mean': humidity_mean,
+        'tec_mean': tec_mean,
+        'kp_mean': kp_mean,
+        'dst_mean': dst_mean,
+        'f107_mean': f107_mean,
+    }
+
+
 def collect_and_save():
-    # 1. Загружаем настройки (если есть)
+    # 1. Загружаем настройки
     settings_path = "config/settings.yaml"
     settings = {}
     if os.path.exists(settings_path):
         with open(settings_path, 'r', encoding='utf-8') as f:
             settings = yaml.safe_load(f)
 
-    # 2. Инициализируем сборщики
-    weather = WeatherCollector()
-    iono = IonosphereCollector(cache_dir="data/ionex_cache")
-    space = SpaceWeatherCollector()
+    # 2. Загружаем глобальные индексы за 2024 год (один раз)
+    logger.info("📥 Загрузка глобальных индексов за 2024 год...")
+    kp_df = load_kp_2024()
+    dst_df = load_dst_2024()
+    f107_df = load_f107_2024()
 
-    # 3. Загружаем USGS за 2024 год (M≥4.5)
+    if kp_df.empty or dst_df.empty or f107_df.empty:
+        logger.error("❌ Не удалось загрузить глобальные индексы. Прерывание.")
+        return
+
+    # 3. Загружаем USGS за 2024 год
     logger.info("📥 Загрузка USGS за 2024 год...")
     collector = USGSCollector(cache_enabled=True)
     start_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -57,107 +280,57 @@ def collect_and_save():
 
     logger.info(f"✅ Загружено {len(df_events)} событий")
 
-    # 4. Инициализируем GEE для LST (ключ должен быть в окружении)
+    # 4. Инициализируем GEE для LST
     GEEInitializer.init()
 
-    # 5. Для каждого события собираем признаки
+    # 5. Цикл по событиям
     all_data = []
     total = len(df_events)
     start_time = time.time()
-    
+    skipped = 0
+
     for i, (_, row) in enumerate(df_events.iterrows()):
         if i % 10 == 0:
             elapsed = (time.time() - start_time) / 60
-            logger.info(f"Обработка {i+1}/{total} (прошло {elapsed:.1f} мин)")
+            logger.info(f"Обработка {i+1}/{total} (прошло {elapsed:.1f} мин), пропущено {skipped}")
 
-        event_id = row['id']
         lat, lon = row['latitude'], row['longitude']
         event_time = row['time']
         mag = row['magnitude']
         depth = row['depth_km']
 
-        # Погода (7 дней до, 3 после)
-        try:
-            wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
-            if not wdf.empty:
-                temp_mean = float(wdf['temp_2m_mean'].mean())
-                humidity_mean = float(wdf['humidity_2m_mean'].mean())
-            else:
-                temp_mean = humidity_mean = None
-        except Exception as e:
-            logger.debug(f"Ошибка погоды для {event_id}: {e}")
-            temp_mean = humidity_mean = None
+        features = get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df)
+        if features is None:
+            skipped += 1
+            continue
 
-        # Космическая погода (7 дней до, 3 после)
-        try:
-            start_sp = event_time - timedelta(days=7)
-            end_sp = event_time + timedelta(days=3)
-            space_data = space.fetch_all_for_period(start_sp, end_sp)
-            kp_df = space_data.get('kp', pd.DataFrame())
-            dst_df = space_data.get('dst', pd.DataFrame())
-            f107_df = space_data.get('f107', pd.DataFrame())
-            kp_mean = float(kp_df['kp'].mean()) if not kp_df.empty else None
-            dst_mean = float(dst_df['dst'].mean()) if not dst_df.empty else None
-            f107_mean = float(f107_df['f107'].mean()) if not f107_df.empty else None
-        except Exception as e:
-            logger.debug(f"Ошибка космоса для {event_id}: {e}")
-            kp_mean = dst_mean = f107_mean = None
-
-        # LST (за 7 дней до события)
-        try:
-            start_lst = (event_time - timedelta(days=7)).strftime('%Y-%m-%d')
-            end_lst = event_time.strftime('%Y-%m-%d')
-            lst_data = get_lst_data(lat, lon, start_lst, end_lst)
-            lst_celsius = lst_data['lst_celsius'] if lst_data else None
-        except Exception as e:
-            logger.debug(f"Ошибка LST для {event_id}: {e}")
-            lst_celsius = None
-
-        # TEC (ионосфера) за 7 дней до и 3 после
-        try:
-            tec_df = iono.fetch_tec_for_point(lat, lon, 
-                                              event_time - timedelta(days=7), 
-                                              event_time + timedelta(days=3))
-            tec_mean = float(tec_df['tec_value'].mean()) if not tec_df.empty else None
-        except Exception as e:
-            logger.debug(f"Ошибка TEC для {event_id}: {e}")
-            tec_mean = None
-
-        # Формируем запись
         record = {
-            'id': event_id,
+            'id': row['id'],
             'time': event_time.isoformat(),
             'latitude': lat,
             'longitude': lon,
             'magnitude': mag,
             'depth_km': depth,
-            'lst_celsius': lst_celsius,
-            'temp_mean': temp_mean,
-            'humidity_mean': humidity_mean,
-            'tec_mean': tec_mean,
-            'kp_mean': kp_mean,
-            'dst_mean': dst_mean,
-            'f107_mean': f107_mean,
+            **features
         }
         all_data.append(record)
 
-    # 6. Сохраняем в JSON и pickle
+    logger.info(f"✅ Собрано {len(all_data)} событий с полными реальными данными (пропущено {skipped})")
+
+    # 6. Сохраняем
     output_dir = Path("data")
     output_dir.mkdir(exist_ok=True)
 
-    # JSON
     json_path = output_dir / "cache_2024.json"
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
     logger.info(f"✅ Сохранено {len(all_data)} записей в {json_path}")
 
-    # Pickle
     pkl_path = output_dir / "cache_2024.pkl"
     with open(pkl_path, 'wb') as f:
         pickle.dump(all_data, f)
     logger.info(f"✅ Сохранено в {pkl_path}")
 
-    # Размер
     size_mb = json_path.stat().st_size / (1024 * 1024)
     logger.info(f"Размер JSON: {size_mb:.2f} МБ")
 
