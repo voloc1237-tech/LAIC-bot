@@ -3,6 +3,7 @@
 """
 collect_cache_data.py — сбор реальных данных за 2023 год.
 Глобальные индексы (Kp, Dst, F10.7) загружаются один раз за год.
+Используются альтернативные источники для надёжности.
 Синтетика НЕ используется — если данных нет, событие пропускается.
 """
 
@@ -38,13 +39,14 @@ TARGET_YEAR = 2023
 # =========================
 
 
-# ----- Глобальные функции загрузки годовых рядов -----
+# ----- Глобальные функции загрузки годовых рядов (с альтернативами) -----
 
 def load_kp_year(year):
-    """Загружает Kp (GFZ) за указанный год."""
+    """Загружает Kp за год из альтернативных источников."""
+    # Источник 1: GFZ (основной)
     url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
-        resp = requests.get(url, timeout=60)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         records = []
         for line in resp.text.splitlines():
@@ -71,19 +73,47 @@ def load_kp_year(year):
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ Kp: загружено {len(df)} записей за {year}")
+            logger.info(f"✅ Kp (GFZ): загружено {len(df)} записей за {year}")
             return df
     except Exception as e:
-        logger.error(f"Ошибка загрузки Kp: {e}")
+        logger.warning(f"GFZ Kp не доступен: {e}")
+
+    # Источник 2: NOAA SWPC (резерв)
+    url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        records = []
+        for row in data[1:]:
+            if len(row) < 2:
+                continue
+            time_str = row[0]
+            kp_val = float(row[1]) if row[1] else None
+            if kp_val is None:
+                continue
+            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            if dt.year == year:
+                records.append({'time': dt, 'kp': kp_val})
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ Kp (NOAA): загружено {len(df)} записей за {year}")
+            return df
+    except Exception as e:
+        logger.warning(f"NOAA Kp не доступен: {e}")
+
+    logger.error(f"❌ Kp за {year} не загружен ни из одного источника")
     return pd.DataFrame()
 
 
 def load_dst_year(year):
-    """Загружает Dst за указанный год (NOAA или Kyoto)."""
-    # 1. Пробуем NOAA SWPC JSON
+    """Загружает Dst за год (если доступен)."""
+    # 1. NOAA SWPC JSON
     url = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
     try:
-        resp = requests.get(url, timeout=60)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         records = []
@@ -106,7 +136,7 @@ def load_dst_year(year):
     except Exception as e:
         logger.warning(f"Ошибка загрузки Dst из NOAA: {e}")
 
-    # 2. Пробуем Kyoto (provisional/final)
+    # 2. Kyoto (provisional/final) — может быть медленным
     all_records = []
     for month in range(1, 13):
         month_str = f"{month:02d}"
@@ -115,7 +145,7 @@ def load_dst_year(year):
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month_str}.dst"
         ]:
             try:
-                resp = requests.get(url_template, timeout=30)
+                resp = requests.get(url_template, timeout=20)
                 if resp.status_code != 200:
                     continue
                 lines = resp.text.splitlines()
@@ -153,10 +183,11 @@ def load_dst_year(year):
 
 
 def load_f107_year(year):
-    """Загружает F10.7 (LASP) за указанный год."""
+    """Загружает F10.7 за год."""
+    # 1. LASP (основной)
     url = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
     try:
-        resp = requests.get(url, timeout=60)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         records = []
         for line in resp.text.splitlines():
@@ -180,49 +211,70 @@ def load_f107_year(year):
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ F10.7: загружено {len(df)} записей за {year}")
+            logger.info(f"✅ F10.7 (LASP): загружено {len(df)} записей за {year}")
             return df
     except Exception as e:
-        logger.error(f"Ошибка загрузки F10.7: {e}")
+        logger.warning(f"LASP F10.7 не доступен: {e}")
+
+    # 2. NOAA SWPC (резерв)
+    url = "https://services.swpc.noaa.gov/products/solar-radio-flux.json"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        records = []
+        for row in data[1:]:
+            if len(row) < 2:
+                continue
+            time_str = row[0]
+            f107_val = float(row[1]) if row[1] else None
+            if f107_val is None:
+                continue
+            dt = datetime.strptime(time_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+            if dt.year == year:
+                records.append({'time': dt, 'f107': f107_val})
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ F10.7 (NOAA): загружено {len(df)} записей за {year}")
+            return df
+    except Exception as e:
+        logger.warning(f"NOAA F10.7 не доступен: {e}")
+
+    logger.error(f"❌ F10.7 за {year} не загружен")
     return pd.DataFrame()
 
 
 # ----- Вспомогательная функция для получения признаков события -----
 
 def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
-    """
-    Собирает признаки для одного события.
-    Dst — опционален (если нет, используем среднее -20 нТл).
-    Возвращает словарь или None, если критических данных нет.
-    """
-    # 1. Kp (обязателен)
-    if kp_df.empty:
+    """Собирает признаки для одного события."""
+    if kp_df.empty or f107_df.empty:
         return None
+
     event_ts = pd.Timestamp(event_time).tz_convert('UTC')
+
+    # Kp
     idx = kp_df.index.get_indexer([event_ts], method='nearest')[0]
     if idx == -1:
         return None
     kp_mean = float(kp_df.iloc[idx]['kp'])
 
-    # 2. Dst (опционально)
+    # Dst (опционально)
     if dst_df is not None and not dst_df.empty:
         idx = dst_df.index.get_indexer([event_ts], method='nearest')[0]
-        if idx != -1:
-            dst_mean = float(dst_df.iloc[idx]['dst'])
-        else:
-            dst_mean = -20.0
+        dst_mean = float(dst_df.iloc[idx]['dst']) if idx != -1 else -20.0
     else:
         dst_mean = -20.0
 
-    # 3. F10.7 (обязателен)
-    if f107_df.empty:
-        return None
+    # F10.7
     date_mask = f107_df.index.date == event_ts.date()
     if not date_mask.any():
         return None
     f107_mean = float(f107_df[date_mask]['f107'].mean())
 
-    # 4. Погода (Open-Meteo)
+    # Погода
     weather = WeatherCollector()
     try:
         wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
@@ -233,7 +285,7 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     except:
         return None
 
-    # 5. LST (MODIS/ERA5)
+    # LST
     try:
         start_lst = (event_time - timedelta(days=7)).strftime('%Y-%m-%d')
         end_lst = event_time.strftime('%Y-%m-%d')
@@ -244,7 +296,7 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     except:
         return None
 
-    # 6. TEC (ионосфера)
+    # TEC
     iono = IonosphereCollector(cache_dir="data/ionex_cache")
     try:
         tec_df = iono.fetch_tec_for_point(
@@ -272,14 +324,6 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
 def collect_and_save():
     year = TARGET_YEAR
 
-    # 1. Загружаем настройки
-    settings_path = "config/settings.yaml"
-    settings = {}
-    if os.path.exists(settings_path):
-        with open(settings_path, 'r', encoding='utf-8') as f:
-            settings = yaml.safe_load(f)
-
-    # 2. Загружаем глобальные индексы за год
     logger.info(f"📥 Загрузка глобальных индексов за {year} год...")
     kp_df = load_kp_year(year)
     dst_df = load_dst_year(year)
@@ -289,7 +333,6 @@ def collect_and_save():
         logger.error(f"❌ Не удалось загрузить Kp или F10.7 за {year}. Прерывание.")
         return
 
-    # 3. Загружаем USGS за год
     logger.info(f"📥 Загрузка USGS за {year} год...")
     collector = USGSCollector(cache_enabled=True)
     start_date = datetime(year, 1, 1, tzinfo=timezone.utc)
@@ -302,10 +345,8 @@ def collect_and_save():
 
     logger.info(f"✅ Загружено {len(df_events)} событий")
 
-    # 4. Инициализируем GEE для LST
     GEEInitializer.init()
 
-    # 5. Цикл по событиям
     all_data = []
     total = len(df_events)
     start_time = time.time()
@@ -318,8 +359,6 @@ def collect_and_save():
 
         lat, lon = row['latitude'], row['longitude']
         event_time = row['time']
-        mag = row['magnitude']
-        depth = row['depth_km']
 
         features = get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df)
         if features is None:
@@ -331,15 +370,14 @@ def collect_and_save():
             'time': event_time.isoformat(),
             'latitude': lat,
             'longitude': lon,
-            'magnitude': mag,
-            'depth_km': depth,
+            'magnitude': row['magnitude'],
+            'depth_km': row['depth_km'],
             **features
         }
         all_data.append(record)
 
     logger.info(f"✅ Собрано {len(all_data)} событий с полными реальными данными (пропущено {skipped})")
 
-    # 6. Сохраняем
     output_dir = Path("data")
     output_dir.mkdir(exist_ok=True)
 
