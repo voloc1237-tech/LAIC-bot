@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — сбор реальных данных за 2023 год.
-Глобальные индексы (Kp, Dst, F10.7) загружаются один раз за год.
-Используются альтернативные источники для надёжности.
-Синтетика НЕ используется — если данных нет, событие пропускается.
+collect_cache_data.py — сбор реальных данных за указанный год.
+Используются только проверенные рабочие источники.
 """
 
 import os
@@ -39,14 +37,11 @@ TARGET_YEAR = 2023
 # =========================
 
 
-# ----- Глобальные функции загрузки годовых рядов (с альтернативами) -----
-
 def load_kp_year(year):
-    """Загружает Kp за год из альтернативных источников."""
-    # Источник 1: GFZ (основной)
+    """Загружает Kp из GFZ (надёжный источник)."""
     url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         records = []
         for line in resp.text.splitlines():
@@ -73,79 +68,25 @@ def load_kp_year(year):
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ Kp (GFZ): загружено {len(df)} записей за {year}")
+            logger.info(f"✅ Kp: загружено {len(df)} записей за {year}")
             return df
     except Exception as e:
-        logger.warning(f"GFZ Kp не доступен: {e}")
-
-    # Источник 2: NOAA SWPC (резерв)
-    url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        records = []
-        for row in data[1:]:
-            if len(row) < 2:
-                continue
-            time_str = row[0]
-            kp_val = float(row[1]) if row[1] else None
-            if kp_val is None:
-                continue
-            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-            if dt.year == year:
-                records.append({'time': dt, 'kp': kp_val})
-        if records:
-            df = pd.DataFrame(records)
-            df.set_index('time', inplace=True)
-            df.sort_index(inplace=True)
-            logger.info(f"✅ Kp (NOAA): загружено {len(df)} записей за {year}")
-            return df
-    except Exception as e:
-        logger.warning(f"NOAA Kp не доступен: {e}")
-
-    logger.error(f"❌ Kp за {year} не загружен ни из одного источника")
+        logger.error(f"Ошибка загрузки Kp: {e}")
     return pd.DataFrame()
 
 
 def load_dst_year(year):
-    """Загружает Dst за год (если доступен)."""
-    # 1. NOAA SWPC JSON
-    url = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        records = []
-        for row in data[1:]:
-            if len(row) < 2:
-                continue
-            time_str = row[0]
-            dst_val = float(row[1]) if row[1] else None
-            if dst_val is None:
-                continue
-            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-            if dt.year == year:
-                records.append({'time': dt, 'dst': dst_val})
-        if records:
-            df = pd.DataFrame(records)
-            df.set_index('time', inplace=True)
-            df.sort_index(inplace=True)
-            logger.info(f"✅ Dst (NOAA): загружено {len(df)} записей за {year}")
-            return df
-    except Exception as e:
-        logger.warning(f"Ошибка загрузки Dst из NOAA: {e}")
-
-    # 2. Kyoto (provisional/final) — может быть медленным
+    """Загружает Dst из Kyoto WDC (надёжный источник)."""
     all_records = []
     for month in range(1, 13):
         month_str = f"{month:02d}"
+        # Пробуем provisional и final
         for url_template in [
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month_str}/{year}{month_str}.dst",
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month_str}.dst"
         ]:
             try:
-                resp = requests.get(url_template, timeout=20)
+                resp = requests.get(url_template, timeout=30)
                 if resp.status_code != 200:
                     continue
                 lines = resp.text.splitlines()
@@ -167,7 +108,7 @@ def load_dst_year(year):
                             all_records.append({'time': dt, 'dst': dst_mean})
                     except:
                         continue
-                break
+                break  # если успешно загрузили месяц
             except:
                 continue
 
@@ -183,11 +124,10 @@ def load_dst_year(year):
 
 
 def load_f107_year(year):
-    """Загружает F10.7 за год."""
-    # 1. LASP (основной)
+    """Загружает F10.7 из LASP (надёжный источник)."""
     url = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         records = []
         for line in resp.text.splitlines():
@@ -214,39 +154,9 @@ def load_f107_year(year):
             logger.info(f"✅ F10.7 (LASP): загружено {len(df)} записей за {year}")
             return df
     except Exception as e:
-        logger.warning(f"LASP F10.7 не доступен: {e}")
-
-    # 2. NOAA SWPC (резерв)
-    url = "https://services.swpc.noaa.gov/products/solar-radio-flux.json"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        records = []
-        for row in data[1:]:
-            if len(row) < 2:
-                continue
-            time_str = row[0]
-            f107_val = float(row[1]) if row[1] else None
-            if f107_val is None:
-                continue
-            dt = datetime.strptime(time_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-            if dt.year == year:
-                records.append({'time': dt, 'f107': f107_val})
-        if records:
-            df = pd.DataFrame(records)
-            df.set_index('time', inplace=True)
-            df.sort_index(inplace=True)
-            logger.info(f"✅ F10.7 (NOAA): загружено {len(df)} записей за {year}")
-            return df
-    except Exception as e:
-        logger.warning(f"NOAA F10.7 не доступен: {e}")
-
-    logger.error(f"❌ F10.7 за {year} не загружен")
+        logger.error(f"Ошибка загрузки F10.7: {e}")
     return pd.DataFrame()
 
-
-# ----- Вспомогательная функция для получения признаков события -----
 
 def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     """Собирает признаки для одного события."""
