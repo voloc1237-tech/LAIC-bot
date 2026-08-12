@@ -717,9 +717,9 @@ def main():
             for zone_id, zone_data in zone_events.items():   # <-- ПЕРЕИМЕНОВАНО zone_data
                 if zone_id == "unknown":
                     continue
-                lat = zone_info['lat']
-                lon = zone_info['lon']
-                current_anomalies = zone_info['events']
+                lat = zone_data['lat']
+                lon = zone_data['lon']
+                current_anomalies = zone_data['events']
                 risk = zone_analyzer.calculate_zone_risk(zone_id, lat, lon, current_anomalies)
                 zone_reports.append({
                     'zone_id': zone_id,
