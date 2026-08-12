@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — сбор реальных данных за указанный год.
-Используются только проверенные рабочие источники.
+collect_cache_data.py — быстрый сбор данных за период.
+LST и TEC — климатологические средние (без запросов к GEE/IONEX).
 """
 
 import os
@@ -19,11 +19,9 @@ import numpy as np
 import yaml
 import requests
 
-# Импорты модулей бота
 from data_collector import USGSCollector
 from weather_collector import WeatherCollector
-from ionosphere_collector import IonosphereCollector
-from ee_collector import get_lst_data, GEEInitializer
+from space_weather import SpaceWeatherCollector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,13 +30,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger('CacheCollector')
 
-# ===== НАСТРОЙКА ГОДА =====
-TARGET_YEAR = 2023
-# =========================
+# ===== НАСТРОЙКА ПЕРИОДА =====
+START_DATE = datetime(2023, 8, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2023, 12, 31, tzinfo=timezone.utc)
+MIN_MAGNITUDE = 5.0
+# =============================
 
 
-def load_kp_year(year):
-    """Загружает Kp из GFZ."""
+# ----- Климатологические модели -----
+
+def get_climatology_lst(lat, lon, event_time):
+    """Возвращает климатологическое значение LST в °C."""
+    lat_abs = abs(lat)
+    # Базовая температура (зависит от широты)
+    base_temp = 30 - lat_abs * 0.3
+    # Сезонная поправка (северное полушарие)
+    day_of_year = event_time.timetuple().tm_yday
+    seasonal = 10 * np.sin((day_of_year - 80) * 2 * np.pi / 365)
+    # Высота (грубая поправка: если координаты в горах — чуть холоднее)
+    # Для простоты игнорируем
+    temp = base_temp + seasonal
+    # LST обычно на 2–5°C выше температуры воздуха
+    return temp + 2
+
+
+def get_climatology_tec(lat, lon, event_time):
+    """Возвращает климатологическое значение TEC в TECU."""
+    lat_abs = abs(lat)
+    # TEC максимален на экваторе, минимален у полюсов
+    base_tec = 25 - lat_abs * 0.2
+    # Суточный цикл (максимум днём)
+    hour = event_time.hour
+    daily = 10 * np.sin((hour - 8) * np.pi / 12)
+    # Сезонный цикл (летом больше)
+    day_of_year = event_time.timetuple().tm_yday
+    seasonal = 5 * np.sin((day_of_year - 172) * 2 * np.pi / 365)
+    tec = base_tec + daily + seasonal
+    return max(tec, 3)  # минимум 3 TECU
+
+
+# ----- Загрузка глобальных индексов -----
+
+def load_kp_for_period(start_date, end_date):
+    """Загружает Kp из GFZ за период."""
     url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
         resp = requests.get(url, timeout=60)
@@ -52,15 +86,18 @@ def load_kp_year(year):
                 continue
             try:
                 y = int(parts[0])
-                if y != year:
+                if y != 2023:
                     continue
                 month = int(parts[1])
                 day = int(parts[2])
+                dt_date = datetime(y, month, day, tzinfo=timezone.utc)
+                if dt_date < start_date or dt_date > end_date:
+                    continue
                 for i in range(8):
                     kp_val = float(parts[5+i]) if parts[5+i] else None
                     if kp_val is not None:
                         hour = i*3
-                        dt = datetime(year, month, day, hour, 0, tzinfo=timezone.utc)
+                        dt = datetime(y, month, day, hour, 0, tzinfo=timezone.utc)
                         records.append({'time': dt, 'kp': kp_val})
             except:
                 continue
@@ -68,17 +105,20 @@ def load_kp_year(year):
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ Kp: загружено {len(df)} записей за {year}")
+            logger.info(f"✅ Kp: загружено {len(df)} записей")
             return df
     except Exception as e:
-        logger.error(f"Ошибка загрузки Kp: {e}")
+        logger.warning(f"Kp не загружен: {e}")
     return pd.DataFrame()
 
 
-def load_dst_year(year):
-    """Загружает Dst из Kyoto WDC."""
+def load_dst_for_period(start_date, end_date):
+    """Загружает Dst из Kyoto WDC (если доступен)."""
     all_records = []
-    for month in range(1, 13):
+    current = start_date.replace(day=1)
+    while current <= end_date:
+        year = current.year
+        month = current.month
         month_str = f"{month:02d}"
         for url_template in [
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month_str}/{year}{month_str}.dst",
@@ -104,51 +144,31 @@ def load_dst_year(year):
                         if values:
                             dst_mean = np.mean(values)
                             dt = datetime(int(year_str), 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year-1)
-                            all_records.append({'time': dt, 'dst': dst_mean})
+                            if start_date <= dt <= end_date:
+                                all_records.append({'time': dt, 'dst': dst_mean})
                     except:
                         continue
                 break
             except:
                 continue
+        if current.month == 12:
+            current = current.replace(year=current.year+1, month=1)
+        else:
+            current = current.replace(month=current.month+1)
 
     if all_records:
         df = pd.DataFrame(all_records)
         df.set_index('time', inplace=True)
         df.sort_index(inplace=True)
-        logger.info(f"✅ Dst (Kyoto): загружено {len(df)} записей за {year}")
+        logger.info(f"✅ Dst (Kyoto): загружено {len(df)} записей")
         return df
 
-    logger.warning(f"⚠️ Dst за {year} не найден. Будет использовано среднее значение.")
+    logger.warning("⚠️ Dst не найден. Использую среднее -20 нТл.")
     return None
 
 
-def load_f107_year(year):
-    """Загружает F10.7 из нескольких источников."""
-    # 1. NOAA NCEI (новый формат)
-    url = "https://services.swpc.noaa.gov/json/solar-radio-flux/f10.7.json"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        records = []
-        for item in data:
-            if 'time_tag' not in item or 'f10.7' not in item:
-                continue
-            dt = datetime.strptime(item['time_tag'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
-            if dt.year == year:
-                f107_val = float(item['f10.7']) if item['f10.7'] is not None else None
-                if f107_val is not None:
-                    records.append({'time': dt, 'f107': f107_val})
-        if records:
-            df = pd.DataFrame(records)
-            df.set_index('time', inplace=True)
-            df.sort_index(inplace=True)
-            logger.info(f"✅ F10.7 (NOAA NCEI): загружено {len(df)} записей за {year}")
-            return df
-    except Exception as e:
-        logger.warning(f"NOAA NCEI F10.7 не доступен: {e}")
-
-    # 2. GFZ (вместе с Kp)
+def load_f107_for_period(start_date, end_date):
+    """Загружает F10.7 из GFZ за период."""
     url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
         resp = requests.get(url, timeout=60)
@@ -162,31 +182,33 @@ def load_f107_year(year):
                 continue
             try:
                 y = int(parts[0])
-                if y != year:
+                if y != 2023:
                     continue
                 month = int(parts[1])
                 day = int(parts[2])
+                dt_date = datetime(y, month, day, tzinfo=timezone.utc)
+                if dt_date < start_date or dt_date > end_date:
+                    continue
                 f107_val = float(parts[12]) if parts[12] else None
                 if f107_val is not None and f107_val > 0:
-                    dt = datetime(y, month, day, tzinfo=timezone.utc)
-                    records.append({'time': dt, 'f107': f107_val})
+                    records.append({'time': dt_date, 'f107': f107_val})
             except:
                 continue
         if records:
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ F10.7 (GFZ): загружено {len(df)} записей за {year}")
+            logger.info(f"✅ F10.7: загружено {len(df)} записей")
             return df
     except Exception as e:
-        logger.warning(f"GFZ F10.7 не доступен: {e}")
-
-    logger.error(f"❌ F10.7 за {year} не загружен ни из одного источника")
+        logger.warning(f"F10.7 не загружен: {e}")
     return pd.DataFrame()
 
 
+# ----- Основная функция сбора -----
+
 def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
-    """Собирает признаки для одного события."""
+    """Собирает признаки для одного события (с климатологией для LST и TEC)."""
     if kp_df.empty or f107_df.empty:
         return None
 
@@ -198,7 +220,7 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
         return None
     kp_mean = float(kp_df.iloc[idx]['kp'])
 
-    # Dst (опционально)
+    # Dst
     if dst_df is not None and not dst_df.empty:
         idx = dst_df.index.get_indexer([event_ts], method='nearest')[0]
         dst_mean = float(dst_df.iloc[idx]['dst']) if idx != -1 else -20.0
@@ -211,7 +233,7 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
         return None
     f107_mean = float(f107_df[date_mask]['f107'].mean())
 
-    # Погода
+    # Погода (Open-Meteo)
     weather = WeatherCollector()
     try:
         wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
@@ -222,30 +244,11 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     except:
         return None
 
-    # LST
-    try:
-        start_lst = (event_time - timedelta(days=7)).strftime('%Y-%m-%d')
-        end_lst = event_time.strftime('%Y-%m-%d')
-        lst_data = get_lst_data(lat, lon, start_lst, end_lst)
-        lst_celsius = lst_data['lst_celsius'] if lst_data else None
-        if lst_celsius is None:
-            return None
-    except:
-        return None
+    # LST (климатология)
+    lst_celsius = get_climatology_lst(lat, lon, event_time)
 
-    # TEC
-    iono = IonosphereCollector(cache_dir="data/ionex_cache")
-    try:
-        tec_df = iono.fetch_tec_for_point(
-            lat, lon,
-            event_time - timedelta(days=7),
-            event_time + timedelta(days=3)
-        )
-        if tec_df.empty:
-            return None
-        tec_mean = float(tec_df['tec_value'].mean())
-    except:
-        return None
+    # TEC (климатология)
+    tec_mean = get_climatology_tec(lat, lon, event_time)
 
     return {
         'lst_celsius': lst_celsius,
@@ -259,30 +262,27 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
 
 
 def collect_and_save():
-    year = TARGET_YEAR
+    start_date = START_DATE
+    end_date = END_DATE
 
-    logger.info(f"📥 Загрузка глобальных индексов за {year} год...")
-    kp_df = load_kp_year(year)
-    dst_df = load_dst_year(year)
-    f107_df = load_f107_year(year)
+    logger.info(f"📥 Загрузка глобальных индексов за период {start_date.date()} — {end_date.date()}...")
+    kp_df = load_kp_for_period(start_date, end_date)
+    dst_df = load_dst_for_period(start_date, end_date)
+    f107_df = load_f107_for_period(start_date, end_date)
 
     if kp_df.empty or f107_df.empty:
-        logger.error(f"❌ Не удалось загрузить Kp или F10.7 за {year}. Прерывание.")
+        logger.error("❌ Не удалось загрузить Kp или F10.7. Прерывание.")
         return
 
-    logger.info(f"📥 Загрузка USGS за {year} год...")
+    logger.info(f"📥 Загрузка USGS за период...")
     collector = USGSCollector(cache_enabled=True)
-    start_date = datetime(year, 1, 1, tzinfo=timezone.utc)
-    end_date = datetime(year, 12, 31, tzinfo=timezone.utc)
-    df_events = collector.fetch_global(start_date, end_date, min_magnitude=4.5)
+    df_events = collector.fetch_global(start_date, end_date, min_magnitude=MIN_MAGNITUDE)
 
     if df_events.empty:
-        logger.error(f"Нет данных USGS за {year} год")
+        logger.error("Нет данных USGS за указанный период")
         return
 
     logger.info(f"✅ Загружено {len(df_events)} событий")
-
-    GEEInitializer.init()
 
     all_data = []
     total = len(df_events)
@@ -313,17 +313,17 @@ def collect_and_save():
         }
         all_data.append(record)
 
-    logger.info(f"✅ Собрано {len(all_data)} событий с полными реальными данными (пропущено {skipped})")
+    logger.info(f"✅ Собрано {len(all_data)} событий (пропущено {skipped})")
 
     output_dir = Path("data")
     output_dir.mkdir(exist_ok=True)
 
-    json_path = output_dir / f"cache_{year}.json"
+    json_path = output_dir / f"cache_{start_date.strftime('%Y%m')}_{end_date.strftime('%Y%m')}.json"
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
-    logger.info(f"✅ Сохранено {len(all_data)} записей в {json_path}")
+    logger.info(f"✅ Сохранено в {json_path}")
 
-    pkl_path = output_dir / f"cache_{year}.pkl"
+    pkl_path = output_dir / f"cache_{start_date.strftime('%Y%m')}_{end_date.strftime('%Y%m')}.pkl"
     with open(pkl_path, 'wb') as f:
         pickle.dump(all_data, f)
     logger.info(f"✅ Сохранено в {pkl_path}")
