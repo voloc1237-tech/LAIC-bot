@@ -683,8 +683,9 @@ def main():
     logger.info("=" * 70)
 
     zone_analyzer = FaultZoneAnalyzer()
-    zone_alerts = {}  # для отправки алертов
-
+    zone_alerts = {}        # для отправки алертов
+    zone_risks = {}         # <-- ИНИЦИАЛИЗИРУЕМ СЛОВАРЬ ДЛЯ ВИЗУАЛИЗАЦИИ
+    
     if zone_analyzer.gdf is not None:
         # Собираем аномальные события (например, из event_iono)
         anomaly_events = []
@@ -713,7 +714,7 @@ def main():
 
              # Рассчитываем риск для каждой зоны
             zone_reports = []
-            for zone_id, data in zone_events.items():
+            for zone_id, zone_data in zone_events.items():   # <-- ПЕРЕИМЕНОВАНО zone_data
                 if zone_id == "unknown":
                     continue
                 lat = data['lat']
