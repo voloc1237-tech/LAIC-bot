@@ -1,0 +1,51 @@
+name: Backtest LAIC Model
+
+on:
+  workflow_dispatch:  # запуск вручную из интерфейса GitHub
+  schedule:
+    - cron: '0 0 * * 0'  # раз в неделю, по воскресеньям в 00:00 (опционально)
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 часа, можно увеличить
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install earthengine-api google-auth tensorflow scikit-learn joblib
+          # Для бэктеста нужны дополнительные библиотеки
+          pip install scikit-learn pandas numpy
+
+      - name: Prepare Earth Engine key
+        env:
+          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
+        run: |
+          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d > /tmp/ee-key.json
+          echo "✅ EE key ready"
+
+      - name: Run backtest
+        env:
+          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
+          EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
+          # Если бэктест требует Telegram, можно передать токены, но для бэктеста они не обязательны
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python backtest_full.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            backtest_full_results.csv
+            backtest_results.csv
+            backtest_report.txt
