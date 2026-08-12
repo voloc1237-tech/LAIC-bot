@@ -13,6 +13,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
+from fault_zones import FaultZoneAnalyzer
 
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
@@ -672,6 +673,70 @@ def main():
             #logger.warning("⚠️ LAIC модели не обучены")
     #else:
         #logger.info("ℹ️ LAIC прогнозирование пропущено")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 1f. АНАЛИЗ ПО СЕЙСМИЧЕСКИМ ЗОНАМ
+    # ═══════════════════════════════════════════════════════════════
+    logger.info("\n" + "=" * 70)
+    logger.info("🌍 ЭТАП 1f: Анализ по сейсмическим зонам")
+    logger.info("=" * 70)
+
+    zone_analyzer = FaultZoneAnalyzer()
+    if zone_analyzer.gdf is not None:
+        # Собираем все аномальные события (например, из event_iono или anomaly_df)
+        # Предположим, что у нас есть strong_events (сильные события) и event_iono с флагом is_anomaly
+        anomaly_events = []
+        for idx, row in strong_events.iterrows():
+            event_id = row['id']
+            if event_id in event_iono and event_iono[event_id].get('is_anomaly', False):
+                anomaly_events.append({
+                    'id': event_id,
+                    'lat': row['latitude'],
+                    'lon': row['longitude'],
+                    'mag': row['magnitude'],
+                    'time': row['time'],
+                    'z_score': event_iono[event_id].get('z_score_max', 0)
+                })
+
+        if anomaly_events:
+            zone_stats = {}
+            for evt in anomaly_events:
+                zone, dist = zone_analyzer.get_nearest_zone(evt['lat'], evt['lon'], max_distance_km=150)
+                if zone is None:
+                    zone = "Неизвестная зона"
+                if zone not in zone_stats:
+                    zone_stats[zone] = {
+                        'events': [],
+                        'max_mag': 0,
+                        'max_z': 0,
+                        'count': 0
+                    }
+                zone_stats[zone]['events'].append(evt)
+                zone_stats[zone]['count'] += 1
+                zone_stats[zone]['max_mag'] = max(zone_stats[zone]['max_mag'], evt['mag'])
+                zone_stats[zone]['max_z'] = max(zone_stats[zone]['max_z'], evt['z_score'])
+
+            # Формируем сообщение для Telegram
+            zone_report = "🌍 **Аномалии по сейсмическим зонам:**\n\n"
+            for zone, stats in zone_stats.items():
+                zone_report += f"🔹 **{zone}**\n"
+                zone_report += f"   • Аномалий: {stats['count']}\n"
+                zone_report += f"   • Макс магнитуда: {stats['max_mag']:.1f}\n"
+                zone_report += f"   • Макс Z-score: {stats['max_z']:.2f}σ\n"
+                # Можно добавить прогноз для зоны (например, на основе количества аномалий)
+                zone_report += f"   • Прогноз: {'⚠️ Повышенный риск' if stats['count'] >= 2 else '🔵 Наблюдение'}\n\n"
+
+            # Отправляем в Telegram
+            if TG_AVAILABLE and chat_id:
+                try:
+                    send_photo(chat_id, None, zone_report)  # или send_message
+                    logger.info("✅ Отчёт по зонам отправлен")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки отчёта по зонам: {e}")
+        else:
+            logger.info("ℹ️ Аномальных событий не найдено, анализ зон пропущен.")
+    else:
+        logger.info("ℹ️ Файл разломов не загружен, анализ зон отключён.")
 
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 2: LAIC-АНАЛИЗ
