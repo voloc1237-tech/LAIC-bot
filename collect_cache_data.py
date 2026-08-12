@@ -38,7 +38,7 @@ TARGET_YEAR = 2023
 
 
 def load_kp_year(year):
-    """Загружает Kp из GFZ (надёжный источник)."""
+    """Загружает Kp из GFZ."""
     url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
         resp = requests.get(url, timeout=60)
@@ -76,11 +76,10 @@ def load_kp_year(year):
 
 
 def load_dst_year(year):
-    """Загружает Dst из Kyoto WDC (надёжный источник)."""
+    """Загружает Dst из Kyoto WDC."""
     all_records = []
     for month in range(1, 13):
         month_str = f"{month:02d}"
-        # Пробуем provisional и final
         for url_template in [
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month_str}/{year}{month_str}.dst",
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month_str}.dst"
@@ -108,7 +107,7 @@ def load_dst_year(year):
                             all_records.append({'time': dt, 'dst': dst_mean})
                     except:
                         continue
-                break  # если успешно загрузили месяц
+                break
             except:
                 continue
 
@@ -124,8 +123,33 @@ def load_dst_year(year):
 
 
 def load_f107_year(year):
-    """Загружает F10.7 из LASP (надёжный источник)."""
-    url = "https://lasp.colorado.edu/lisird/data/570_daily.txt"
+    """Загружает F10.7 из нескольких источников."""
+    # 1. NOAA NCEI (новый формат)
+    url = "https://services.swpc.noaa.gov/json/solar-radio-flux/f10.7.json"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        records = []
+        for item in data:
+            if 'time_tag' not in item or 'f10.7' not in item:
+                continue
+            dt = datetime.strptime(item['time_tag'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+            if dt.year == year:
+                f107_val = float(item['f10.7']) if item['f10.7'] is not None else None
+                if f107_val is not None:
+                    records.append({'time': dt, 'f107': f107_val})
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ F10.7 (NOAA NCEI): загружено {len(df)} записей за {year}")
+            return df
+    except Exception as e:
+        logger.warning(f"NOAA NCEI F10.7 не доступен: {e}")
+
+    # 2. GFZ (вместе с Kp)
+    url = "https://www-app3.gfz-potsdam.de/kp_index/Kp_ap_Ap_SN_F107_since_1932.txt"
     try:
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
@@ -134,16 +158,17 @@ def load_f107_year(year):
             if not line.strip() or line.startswith('#'):
                 continue
             parts = line.split()
-            if len(parts) < 4:
+            if len(parts) < 13:
                 continue
             try:
                 y = int(parts[0])
                 if y != year:
                     continue
-                day_of_year = int(parts[1])
-                f107_val = float(parts[2]) if parts[2] else None
-                if f107_val is not None:
-                    dt = datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year-1)
+                month = int(parts[1])
+                day = int(parts[2])
+                f107_val = float(parts[12]) if parts[12] else None
+                if f107_val is not None and f107_val > 0:
+                    dt = datetime(y, month, day, tzinfo=timezone.utc)
                     records.append({'time': dt, 'f107': f107_val})
             except:
                 continue
@@ -151,10 +176,12 @@ def load_f107_year(year):
             df = pd.DataFrame(records)
             df.set_index('time', inplace=True)
             df.sort_index(inplace=True)
-            logger.info(f"✅ F10.7 (LASP): загружено {len(df)} записей за {year}")
+            logger.info(f"✅ F10.7 (GFZ): загружено {len(df)} записей за {year}")
             return df
     except Exception as e:
-        logger.error(f"Ошибка загрузки F10.7: {e}")
+        logger.warning(f"GFZ F10.7 не доступен: {e}")
+
+    logger.error(f"❌ F10.7 за {year} не загружен ни из одного источника")
     return pd.DataFrame()
 
 
