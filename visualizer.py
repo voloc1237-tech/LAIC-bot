@@ -378,6 +378,7 @@ def create_interactive_report(
     iono_data: dict = None,
     space_data: dict = None,
     anomaly_data: pd.DataFrame = None
+    zone_risks: dict = None   # <-- добавить сюда
 ) -> str:
     """
     Создаёт самодостаточный HTML-отчёт с картами, графиками и таблицей.
@@ -454,6 +455,37 @@ def create_interactive_report(
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
+    # ========== ЗОНЫ РИСКА НА КАРТЕ ==========
+    if zone_risks:
+        # Добавляем разломы из GeoJSON
+        try:
+            import json
+            with open('data/gem_active_faults.geojson', 'r') as f:
+                faults = json.load(f)
+            folium.GeoJson(
+                faults,
+                name='Активные разломы',
+                style_function=lambda x: {'color': 'gray', 'weight': 1, 'opacity': 0.5}
+            ).add_to(m)
+        except Exception as e:
+            logger.warning(f"Не удалось добавить разломы на карту: {e}")
+
+        # Для каждой зоны с риском добавляем маркер или круг
+        for zone_id, zone_data in zone_risks.items():
+            risk = zone_data.get('risk', {})
+            if risk.get('level') in ['critical', 'high']:
+                color = 'red' if risk['level'] == 'critical' else 'orange'
+                lat = zone_data.get('lat')
+                lon = zone_data.get('lon')
+                if lat is not None and lon is not None:
+                    folium.Circle(
+                        location=[lat, lon],
+                        radius=50000,  # 50 км
+                        color=color,
+                        fill=True,
+                        fill_opacity=0.2,
+                        popup=f"Зона {zone_id}: {risk['level'].upper()}"
+                    ).add_to(m)
     map_html = m._repr_html_()
 
     # ========== 2. 3D-КАРТА ==========
