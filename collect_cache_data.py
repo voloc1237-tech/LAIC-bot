@@ -75,23 +75,50 @@ def load_kp_2024():
 
 
 def load_dst_2024():
-    """Загружает Dst (Kyoto WDC) за 2024 год (provisional или final)."""
-    # Пытаемся загрузить помесячно, так как архив разбит по месяцам
+    """Загружает Dst за 2024 год из NOAA SWPC JSON (основной) или Kyoto (резерв)."""
+    # 1. Пробуем NOAA SWPC JSON
+    url = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # Первая строка — заголовки, остальные — данные
+        # Формат: [time, dst, ...]
+        records = []
+        for row in data[1:]:
+            if len(row) < 2:
+                continue
+            time_str = row[0]
+            dst_val = float(row[1]) if row[1] else None
+            if dst_val is None:
+                continue
+            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            if dt.year == 2024:
+                records.append({'time': dt, 'dst': dst_val})
+        if records:
+            df = pd.DataFrame(records)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            logger.info(f"✅ Dst (NOAA): загружено {len(df)} записей за 2024")
+            return df
+    except Exception as e:
+        logger.warning(f"Ошибка загрузки Dst из NOAA: {e}")
+
+    # 2. Если NOAA не дал данных, пробуем Kyoto (provisional/final)
     all_records = []
     for month in range(1, 13):
         year = 2024
         month_str = f"{month:02d}"
-        # Сначала пробуем provisional
+        # provisional
         url = f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year}{month_str}/{year}{month_str}.dst"
-        # Если нет, пробуем final
         try:
             resp = requests.get(url, timeout=30)
             if resp.status_code != 200:
-                # пробуем final
+                # final
                 url = f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year}/{year}{month_str}.dst"
                 resp = requests.get(url, timeout=30)
                 if resp.status_code != 200:
-                    logger.warning(f"Dst за {year}-{month_str} не найден")
+                    logger.warning(f"Dst за {year}-{month_str} не найден в Kyoto")
                     continue
         except:
             continue
@@ -104,8 +131,6 @@ def load_dst_2024():
             try:
                 year_str = line[2:6].strip()
                 day_of_year = int(line[7:10].strip())
-                # час не критичен, будем брать среднее за день
-                # Но можно взять все 24 значения
                 values = []
                 for i in range(24):
                     pos = 20 + i*4
@@ -113,7 +138,6 @@ def load_dst_2024():
                     if val_str and val_str != '9999':
                         values.append(float(val_str))
                 if values:
-                    # усредним за день
                     dst_mean = np.mean(values)
                     dt = datetime(int(year_str), 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year-1)
                     all_records.append({'time': dt, 'dst': dst_mean})
@@ -124,10 +148,10 @@ def load_dst_2024():
         df = pd.DataFrame(all_records)
         df.set_index('time', inplace=True)
         df.sort_index(inplace=True)
-        logger.info(f"✅ Dst: загружено {len(df)} записей за 2024")
+        logger.info(f"✅ Dst (Kyoto): загружено {len(df)} записей за 2024")
         return df
     else:
-        logger.error("❌ Dst за 2024 не найден")
+        logger.error("❌ Dst за 2024 не найден ни в NOAA, ни в Kyoto")
         return pd.DataFrame()
 
 
@@ -173,13 +197,10 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     Собирает признаки для одного события.
     Возвращает словарь или None, если данных недостаточно.
     """
-    # 1. Kp — ближайшее по времени (интерполяция или поиск)
+    # 1. Kp — ближайшее по времени
     if kp_df.empty:
         return None
-    # Ищем ближайшее значение Kp (по времени)
-    # Преобразуем event_time в Timestamp для совместимости
     event_ts = pd.Timestamp(event_time).tz_convert('UTC')
-    # Находим индекс ближайшего времени
     idx = kp_df.index.get_indexer([event_ts], method='nearest')[0]
     if idx == -1:
         return None
@@ -193,16 +214,14 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
         return None
     dst_mean = float(dst_df.iloc[idx]['dst'])
 
-    # 3. F10.7
+    # 3. F10.7 — ежедневные, берём за день события
     if f107_df.empty:
         return None
-    # F10.7 — ежедневные, так что возьмём за день события (округлим до даты)
-    date = event_ts.date()
-    # Ищем индекс с этой датой (может быть несколько, но у нас ежедневные)
-    mask = dst_df.index.date == date  # или отдельно для f107
-    if not mask.any():
+    # Ищем индекс с той же датой (без времени)
+    date_mask = f107_df.index.date == event_ts.date()
+    if not date_mask.any():
         return None
-    f107_mean = float(f107_df[mask]['f107'].mean())  # если несколько, усредним
+    f107_mean = float(f107_df[date_mask]['f107'].mean())
 
     # 4. Погода (Open-Meteo)
     weather = WeatherCollector()
@@ -229,9 +248,11 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     # 6. TEC (ионосфера)
     iono = IonosphereCollector(cache_dir="data/ionex_cache")
     try:
-        tec_df = iono.fetch_tec_for_point(lat, lon,
-                                          event_time - timedelta(days=7),
-                                          event_time + timedelta(days=3))
+        tec_df = iono.fetch_tec_for_point(
+            lat, lon,
+            event_time - timedelta(days=7),
+            event_time + timedelta(days=3)
+        )
         if tec_df.empty:
             return None
         tec_mean = float(tec_df['tec_value'].mean())
@@ -333,6 +354,7 @@ def collect_and_save():
 
     size_mb = json_path.stat().st_size / (1024 * 1024)
     logger.info(f"Размер JSON: {size_mb:.2f} МБ")
+
 
 if __name__ == "__main__":
     collect_and_save()
