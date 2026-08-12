@@ -377,7 +377,7 @@ def create_interactive_report(
     period_days: int = 30,
     iono_data: dict = None,
     space_data: dict = None,
-    anomaly_data: pd.DataFrame = None
+    anomaly_data: pd.DataFrame = None,
     zone_risks: dict = None   # <-- добавить сюда
 ) -> str:
     """
