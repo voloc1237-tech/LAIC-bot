@@ -674,17 +674,19 @@ def main():
     #else:
         #logger.info("ℹ️ LAIC прогнозирование пропущено")
 
+
     # ═══════════════════════════════════════════════════════════════
-    # 1f. АНАЛИЗ ПО СЕЙСМИЧЕСКИМ ЗОНАМ
+    # 1f. АНАЛИЗ ПО СЕЙСМИЧЕСКИМ ЗОНАМ (с историей и тектоникой)
     # ═══════════════════════════════════════════════════════════════
     logger.info("\n" + "=" * 70)
-    logger.info("🌍 ЭТАП 1f: Анализ по сейсмическим зонам")
+    logger.info("🌍 ЭТАП 1f: Анализ по сейсмическим зонам (с историей)")
     logger.info("=" * 70)
 
     zone_analyzer = FaultZoneAnalyzer()
+    zone_alerts = {}  # для отправки алертов
+
     if zone_analyzer.gdf is not None:
-        # Собираем все аномальные события (например, из event_iono или anomaly_df)
-        # Предположим, что у нас есть strong_events (сильные события) и event_iono с флагом is_anomaly
+        # Собираем аномальные события (например, из event_iono)
         anomaly_events = []
         for idx, row in strong_events.iterrows():
             event_id = row['id']
@@ -699,45 +701,82 @@ def main():
                 })
 
         if anomaly_events:
-            zone_stats = {}
+            # Группируем по зонам
+            zone_events = {}
             for evt in anomaly_events:
-                zone, dist = zone_analyzer.get_nearest_zone(evt['lat'], evt['lon'], max_distance_km=150)
-                if zone is None:
-                    zone = "Неизвестная зона"
-                if zone not in zone_stats:
-                    zone_stats[zone] = {
-                        'events': [],
-                        'max_mag': 0,
-                        'max_z': 0,
-                        'count': 0
-                    }
-                zone_stats[zone]['events'].append(evt)
-                zone_stats[zone]['count'] += 1
-                zone_stats[zone]['max_mag'] = max(zone_stats[zone]['max_mag'], evt['mag'])
-                zone_stats[zone]['max_z'] = max(zone_stats[zone]['max_z'], evt['z_score'])
+                zone_id, dist = zone_analyzer.get_nearest_zone(evt['lat'], evt['lon'], max_distance_km=150)
+                if zone_id is None:
+                    zone_id = "unknown"
+                if zone_id not in zone_events:
+                    zone_events[zone_id] = {'events': [], 'lat': evt['lat'], 'lon': evt['lon']}
+                zone_events[zone_id]['events'].append(evt)
 
-            # Формируем сообщение для Telegram
-            zone_report = "🌍 **Аномалии по сейсмическим зонам:**\n\n"
-            for zone, stats in zone_stats.items():
-                zone_report += f"🔹 **{zone}**\n"
-                zone_report += f"   • Аномалий: {stats['count']}\n"
-                zone_report += f"   • Макс магнитуда: {stats['max_mag']:.1f}\n"
-                zone_report += f"   • Макс Z-score: {stats['max_z']:.2f}σ\n"
-                # Можно добавить прогноз для зоны (например, на основе количества аномалий)
-                zone_report += f"   • Прогноз: {'⚠️ Повышенный риск' if stats['count'] >= 2 else '🔵 Наблюдение'}\n\n"
+             # Рассчитываем риск для каждой зоны
+            zone_reports = []
+            for zone_id, data in zone_events.items():
+                if zone_id == "unknown":
+                    continue
+                lat = data['lat']
+                lon = data['lon']
+                current_anomalies = data['events']
+                risk = zone_analyzer.calculate_zone_risk(zone_id, lat, lon, current_anomalies)
+                zone_reports.append({
+                    'zone_id': zone_id,
+                    'lat': lat,
+                    'lon': lon,
+                    'risk': risk,
+                    'events': current_anomalies
+                })
+                if risk['level'] == 'critical':
+                    zone_alerts[zone_id] = risk
+
+            # Формируем отчёт
+            report_lines = ["🌍 **Аномалии по сейсмическим зонам (с историей)**\n"]
+            for z in zone_reports:
+                r = z['risk']
+                report_lines.append(
+                    f"{r['emoji']} **{z['zone_id']}**\n"
+                    f"   • Аномалий: {r['anomaly_count']}\n"
+                    f"   • Макс магнитуда: {r['max_mag']:.1f}\n"
+                    f"   • Макс Z-score: {r['max_z']:.2f}σ\n"
+                    f"   • История: {r['hist_count']} событий за 10 лет, макс M={r['hist_max_mag']:.1f}\n"
+                    f"   • Риск-скор: {r['risk_score']}/100\n"
+                    f"   • Прогноз: {r['forecast']}\n"
+                )
+            zone_report = "\n".join(report_lines)
 
             # Отправляем в Telegram
             if TG_AVAILABLE and chat_id:
                 try:
-                    send_photo(chat_id, None, zone_report)  # или send_message
+                    # Отправляем как текстовое сообщение
+                    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+                    url = f"https://api.telegram.org/bot{token}/sendMessage"
+                    payload = {'chat_id': chat_id, 'text': zone_report, 'parse_mode': 'HTML'}
+                    requests.post(url, data=payload, timeout=30)
                     logger.info("✅ Отчёт по зонам отправлен")
                 except Exception as e:
                     logger.error(f"Ошибка отправки отчёта по зонам: {e}")
+
+            # Отправляем алерты для критических зон
+            for zone_id, risk in zone_alerts.items():
+                alert_msg = (
+                    f"🚨 **КРИТИЧЕСКИЙ ПРОГНОЗ ДЛЯ ЗОНЫ {zone_id}**\n"
+                    f"Уровень риска: {risk['emoji']} {risk['level'].upper()}\n"
+                    f"Прогноз: {risk['forecast']}\n"
+                    f"Аномалий: {risk['anomaly_count']}, макс M: {risk['max_mag']:.1f}, Z: {risk['max_z']:.2f}σ"
+                )
+                try:
+                    payload = {'chat_id': chat_id, 'text': alert_msg, 'parse_mode': 'HTML'}
+                    requests.post(url, data=payload, timeout=30)
+                    logger.info(f"🚨 Алерт для зоны {zone_id} отправлен")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки алерта для {zone_id}: {e}")
         else:
             logger.info("ℹ️ Аномальных событий не найдено, анализ зон пропущен.")
     else:
         logger.info("ℹ️ Файл разломов не загружен, анализ зон отключён.")
-
+    
+    
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 2: LAIC-АНАЛИЗ
     # ═══════════════════════════════════════════════════════════════
