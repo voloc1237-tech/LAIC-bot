@@ -892,6 +892,7 @@ def main():
                     iono_data=iono_data,
                     space_data=space_data,
                     anomaly_data=region_anomalies
+                    zone_risks=zone_risks   # <-- передаём словарь из этапа 1f
                 )
                 if html_path:
                     caption = f"📄 {region_name} – интерактивный отчёт"
