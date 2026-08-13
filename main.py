@@ -723,6 +723,7 @@ def main():
                 risk = zone_analyzer.calculate_zone_risk(zone_id, lat, lon, current_anomalies)
                 zone_reports.append({
                     'zone_id': zone_id,
+                    'zone_name': zone_name,
                     'lat': lat,
                     'lon': lon,
                     'risk': risk,
@@ -736,7 +737,7 @@ def main():
             for z in zone_reports:
                 r = z['risk']
                 report_lines.append(
-                    f"{r['emoji']} **{z['zone_id']}**\n"
+                    f"{r['emoji']} **{z['zone_name']}**\n"
                     f"   • Аномалий: {r['anomaly_count']}\n"
                     f"   • Макс магнитуда: {r['max_mag']:.1f}\n"
                     f"   • Макс Z-score: {r['max_z']:.2f}σ\n"
