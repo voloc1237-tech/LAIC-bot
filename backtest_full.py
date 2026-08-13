@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger('Backtest')
 
 class Backtester:
-    def __init__(self, cache_path="data/cache_202308_202312.pkl"):
+    def __init__(self, cache_path="data/cache_202308_202312.json"):
         self.cache_path = Path(cache_path)
         self.df = None
         self.load_cache()
