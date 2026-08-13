@@ -151,7 +151,7 @@ class Backtester:
         print("="*60)
 
 if __name__ == "__main__":
-    bt = Backtester(cache_path="data/cache_202308_202312.pkl")
+    bt = Backtester(cache_path="data/cache_202308_202312.json")
     start = datetime(2023, 10, 1, tzinfo=timezone.utc)  # тестовый период (2 месяца)
     end = datetime(2023, 12, 31, tzinfo=timezone.utc)
     bt.run(start, end, prediction_window=7)
