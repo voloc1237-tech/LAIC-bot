@@ -469,8 +469,8 @@ def main():
                     df_features.at[idx, 'lst_celsius'] = lst_data.get('lst_celsius', 0)
                 
                     # Погода
-                    weather_data = event_weather.get(event_id, {})
-                    if not weather_data.empty:
+                    weather_data = event_weather.get(event_id)
+                    if weather_data is not None and not weather_data.empty:
                         df_features.at[idx, 'temp_mean'] = weather_data['temp_2m_mean'].mean()
                         df_features.at[idx, 'humidity_mean'] = weather_data['humidity_2m_mean'].mean()
                     else:
