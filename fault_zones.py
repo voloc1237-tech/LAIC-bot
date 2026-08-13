@@ -44,7 +44,13 @@ class FaultZoneAnalyzer:
             if dist_km < min_dist_km:
                 min_dist_km = dist_km
                 # Используем поле 'id' или 'zone_name'
-                best_zone = row.get('id', f'zone_{idx}')
+                # Берём название разлома, если есть
+                zone_name = row.get('name')
+                if not zone_name:
+                    # Если названия нет, используем ID
+                    zone_name = row.get('id', f'zone_{idx}')
+                best_zone = zone_name
+                
         if min_dist_km <= max_distance_km:
             return best_zone, min_dist_km
         return None, None
