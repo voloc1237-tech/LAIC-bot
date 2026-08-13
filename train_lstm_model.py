@@ -41,16 +41,32 @@ class LSTMTrainer:
         """Загружает объединённую библиотеку данных."""
         all_data = []
         for year in years:
-            path = Path(f"data/cache_{year}08_{year}12.json")
-            if not path.exists():
-                logger.warning(f"⚠️ Файл за {year} не найден, пропускаем")
-                continue
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            df = pd.DataFrame(data)
-            df['time'] = pd.to_datetime(df['time'], utc=True)
-            all_data.append(df)
-            logger.info(f"✅ {year}: {len(df)} событий")
+            # Пробуем разные варианты имён файлов
+            possible_paths = [
+                Path(f"data/cache_{year}08_{year}12.json"),
+                Path(f"data/cache_{year}.json"),
+                Path(f"data/library_{year}.json"),
+                Path(f"data/cache_{year}08_{year}12.pkl"),
+            ]
+            loaded = False
+            for path in possible_paths:
+                if path.exists():
+                    logger.info(f"📂 Загрузка {path}")
+                    if path.suffix == '.json':
+                        with open(path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    else:  # .pkl
+                        with open(path, 'rb') as f:
+                            data = pickle.load(f)
+                    df = pd.DataFrame(data)
+                    # ИСПРАВЛЕНО: явно указываем формат ISO8601
+                    df['time'] = pd.to_datetime(df['time'], utc=True, format='ISO8601')
+                    all_data.append(df)
+                    logger.info(f"✅ {year}: {len(df)} событий из {path.name}")
+                    loaded = True
+                    break
+            if not loaded:
+                logger.warning(f"⚠️ Данные за {year} не найдены")
         
         if not all_data:
             logger.error("❌ Нет данных для обучения")
@@ -62,18 +78,12 @@ class LSTMTrainer:
         return merged
     
     def prepare_sequences(self, df):
-        """
-        Подготавливает последовательности для LSTM.
-        Создаёт целевую переменную: событие M≥6.0 в следующие 7 дней.
-        """
+        """Подготавливает последовательности для LSTM."""
         X, y = [], []
         df_sorted = df.sort_values('time').reset_index(drop=True)
         
         for i in range(self.sequence_length, len(df_sorted)):
-            # Признаки за последние sequence_length дней
             X.append(df_sorted.iloc[i-self.sequence_length:i][self.feature_names].values)
-            
-            # Целевая переменная: было ли событие M≥6.0 в следующие 7 дней
             event_time = df_sorted.iloc[i]['time']
             future = df_sorted[
                 (df_sorted['time'] > event_time) &
@@ -92,15 +102,13 @@ class LSTMTrainer:
             LSTM(32, activation='relu', return_sequences=False),
             Dropout(0.2),
             Dense(16, activation='relu'),
-            Dense(1, activation='sigmoid')  # бинарная классификация
+            Dense(1, activation='sigmoid')
         ])
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         return model
     
     def train(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
-        """Обучает модель с ранней остановкой."""
         early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-        
         history = self.model.fit(
             X_train, y_train,
             epochs=epochs,
@@ -112,10 +120,8 @@ class LSTMTrainer:
         return history
     
     def evaluate(self, X_test, y_test):
-        """Оценивает модель на тестовой выборке."""
         y_pred_prob = self.model.predict(X_test).flatten()
         y_pred = (y_pred_prob >= 0.5).astype(int)
-        
         metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
             'precision': precision_score(y_test, y_pred, zero_division=0),
@@ -126,65 +132,42 @@ class LSTMTrainer:
         return metrics
     
     def save_model(self, model_path="models/lstm_model.keras", scaler_path="models/lstm_scaler.pkl"):
-        """Сохраняет модель и скейлер."""
         Path("models").mkdir(exist_ok=True)
         self.model.save(model_path)
         with open(scaler_path, 'wb') as f:
             pickle.dump(self.scaler, f)
         logger.info(f"💾 Модель сохранена в {model_path}")
         logger.info(f"💾 Скейлер сохранён в {scaler_path}")
-    
-    def load_model(self, model_path="models/lstm_model.keras", scaler_path="models/lstm_scaler.pkl"):
-        """Загружает модель и скейлер."""
-        try:
-            from tensorflow.keras.models import load_model
-            self.model = load_model(model_path)
-            with open(scaler_path, 'rb') as f:
-                self.scaler = pickle.load(f)
-            logger.info(f"📂 Модель загружена из {model_path}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка загрузки модели: {e}")
-            return False
 
 
 def main():
-    # 1. Загружаем данные
     logger.info("📥 Загрузка библиотеки данных...")
     trainer = LSTMTrainer()
     df = trainer.load_library(years=[2022, 2023, 2024])
     if df is None:
         return
 
-    # 2. Подготавливаем последовательности
     logger.info("🔄 Подготовка последовательностей...")
     X, y = trainer.prepare_sequences(df)
     logger.info(f"📊 Последовательностей: {len(X)}, положительных: {sum(y)}, отрицательных: {len(y)-sum(y)}")
 
-    # 3. Разделяем на train/val/test (60/20/20)
     X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.25, random_state=42)
     
-    # 4. Масштабируем признаки (для каждого временного шага отдельно)
-    # Приводим к 2D для масштабирования
     n_samples, n_steps, n_features = X_train.shape
     X_train_flat = X_train.reshape(-1, n_features)
     trainer.scaler.fit(X_train_flat)
     
-    # Масштабируем все наборы
     X_train_scaled = trainer.scaler.transform(X_train_flat).reshape(X_train.shape)
     X_val_scaled = trainer.scaler.transform(X_val.reshape(-1, n_features)).reshape(X_val.shape)
     X_test_scaled = trainer.scaler.transform(X_test.reshape(-1, n_features)).reshape(X_test.shape)
 
-    # 5. Строим модель
     logger.info("🧠 Построение LSTM модели...")
     trainer.model = trainer.build_model((n_steps, n_features))
 
-    # 6. Обучаем
     logger.info("⚡ Обучение модели...")
     trainer.train(X_train_scaled, y_train, X_val_scaled, y_val, epochs=50)
 
-    # 7. Оцениваем
     logger.info("📊 Оценка модели на тестовой выборке...")
     metrics = trainer.evaluate(X_test_scaled, y_test)
     logger.info("="*50)
@@ -196,8 +179,8 @@ def main():
     logger.info(f"  ROC-AUC:   {metrics['auc']:.3f}")
     logger.info("="*50)
 
-    # 8. Сохраняем модель
     trainer.save_model()
+    logger.info("✅ Обучение завершено!")
 
 if __name__ == "__main__":
     main()
