@@ -1,0 +1,42 @@
+name: Train LSTM Model
+
+on:
+  workflow_dispatch:   # запуск вручную
+  schedule:
+    - cron: '0 0 1 * *'   # раз в месяц (опционально)
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install tensorflow scikit-learn pandas numpy
+
+      - name: Train LSTM model
+        run: |
+          python train_lstm_model.py
+
+      - name: Upload model
+        uses: actions/upload-artifact@v4
+        with:
+          name: lstm-model
+          path: models/
+
+      - name: Commit and push model
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/lstm_model.keras models/lstm_scaler.pkl || true
+          git diff --cached --quiet || git commit -m "Update LSTM model [skip ci]"
+          git push || echo "Push failed"
