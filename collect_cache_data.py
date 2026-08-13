@@ -31,8 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger('CacheCollector')
 
 # ===== НАСТРОЙКА ПЕРИОДА =====
-START_DATE = datetime(2023, 8, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2023, 12, 31, tzinfo=timezone.utc)
+START_DATE = datetime(2024, 8, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2024, 12, 31, tzinfo=timezone.utc)
 MIN_MAGNITUDE = 5.0
 # =============================
 
