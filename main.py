@@ -428,16 +428,8 @@ def main():
 
 
     # ═══════════════════════════════════════════════════════════════
-    # ЭТАП 1e: ПРОГНОЗИРОВАНИЕ (LSTM + резервный гибрид)
+    # ЭТАП 1e: LSTM-ПРОГНОЗИРОВАНИЕ
     # ═══════════════════════════════════════════════════════════════
-
-    logger.info("\n" + "=" * 70)
-    logger.info("🔮 ЭТАП 1e: Прогнозирование")
-    logger.info("=" * 70)
-
-    forecast_sent = False
-
-    # 1. Пробуем LSTM (основной метод)
     try:
         from tensorflow.keras.models import load_model
         import pickle
@@ -446,99 +438,106 @@ def main():
         LSTM_AVAILABLE = False
         logger.warning("⚠️ LSTM модуль недоступен")
 
-    if LSTM_AVAILABLE and not all_events.empty and len(all_events) >= 7:
+    if LSTM_AVAILABLE and not all_events.empty:
+        logger.info("\n" + "=" * 70)
+        logger.info("🔮 ЭТАП 1e: LSTM-прогнозирование")
+        logger.info("=" * 70)
+    
         model_path = "models/lstm_model.keras"
         scaler_path = "models/lstm_scaler.pkl"
     
-        if os.path.exists(model_path) and os.path.exists(scaler_path):
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            logger.warning("⚠️ LSTM модель не найдена. Запустите train_lstm_model.py")
+        else:
             try:
                 model = load_model(model_path)
                 with open(scaler_path, 'rb') as f:
                     scaler = pickle.load(f)
                 logger.info("✅ LSTM модель загружена")
             
+                # ===== СОБИРАЕМ ПРИЗНАКИ =====
                 feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
                                'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
             
-                last_events = all_events.tail(7)
-                X = last_events[feature_names].values
-                X = X.reshape(1, 7, len(feature_names))
-                X_scaled = scaler.transform(X.reshape(-1, len(feature_names))).reshape(X.shape)
+                # Создаём DataFrame с признаками
+                df_features = all_events[['id', 'magnitude', 'depth_km', 'time']].copy()
             
-                prob = model.predict(X_scaled, verbose=0)[0][0]
-                pred_mag = last_events['magnitude'].max() * (0.5 + prob * 0.5)
-            
-                logger.info(f"🔮 LSTM: вероятность M≥6.0 = {prob*100:.1f}%, магнитуда {pred_mag:.2f}")
-            
-                # Отправка в Telegram (основной прогноз)
-                if TG_AVAILABLE and chat_id and prob > 0.2:
-                    if prob > 0.5:
-                        status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
-                    elif prob > 0.3:
-                        status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
-                    else:
-                        status = "✅ Ситуация стабильна. Риск низкий."
+                for idx, row in df_features.iterrows():
+                    event_id = row['id']
+                    # LST
+                    lst_data = lst_cache.get('global', {})
+                    df_features.at[idx, 'lst_celsius'] = lst_data.get('lst_celsius', 0)
                 
-                    forecast_msg = (
-                        f"🧠 <b>LSTM ПРОГНОЗ</b>\n"
-                        f"{'─' * 30}\n"
-                        f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
-                        f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
-                        f"{'─' * 30}\n"
-                        f"{status}"
-                    )
-                    try:
-                        url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
-                        requests.post(url, data=payload, timeout=30)
-                        logger.info("✅ LSTM прогноз отправлен в Telegram")
-                        forecast_sent = True
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка отправки: {e}")
+                    # Погода
+                    weather_data = event_weather.get(event_id, {})
+                    if not weather_data.empty:
+                        df_features.at[idx, 'temp_mean'] = weather_data['temp_2m_mean'].mean()
+                        df_features.at[idx, 'humidity_mean'] = weather_data['humidity_2m_mean'].mean()
+                    else:
+                        df_features.at[idx, 'temp_mean'] = 0
+                        df_features.at[idx, 'humidity_mean'] = 0
+                
+                    # TEC
+                    iono_data = event_iono.get(event_id, {})
+                    tec_df = iono_data.get('tec', pd.DataFrame())
+                    df_features.at[idx, 'tec_mean'] = tec_df['tec_value'].mean() if not tec_df.empty else 0
+                
+                    # Космическая погода
+                    space_data = event_space.get(event_id, {})
+                    kp_df = space_data.get('kp', pd.DataFrame())
+                    dst_df = space_data.get('dst', pd.DataFrame())
+                    f107_df = space_data.get('f107', pd.DataFrame())
+                    df_features.at[idx, 'kp_mean'] = kp_df['kp'].mean() if not kp_df.empty else 0
+                    df_features.at[idx, 'dst_mean'] = dst_df['dst'].mean() if not dst_df.empty else 0
+                    df_features.at[idx, 'f107_mean'] = f107_df['f107'].mean() if not f107_df.empty else 0
             
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка LSTM: {e}")
-        else:
-            logger.warning("⚠️ LSTM модель не найдена. Запустите train_lstm_model.py")
-
-    # 2. Если LSTM не сработал — используем гибрид (резерв)
-    if not forecast_sent:
-        try:
-            from hybrid_predictor import HybridEarthquakePredictor
-            HYBRID_AVAILABLE = True
-        except ImportError:
-            HYBRID_AVAILABLE = False
-
-        if HYBRID_AVAILABLE and not all_events.empty:
-            logger.info("🔄 Использую гибридный прогноз (резерв)")
-            hybrid = HybridEarthquakePredictor(model_dir="data/models")
-            X, y_prob, y_mag = hybrid.prepare_tabular_features(
-                all_events, data, lst_cache, event_iono, event_space, event_weather
-            )
-            if len(X) >= 30:
-                hybrid.train(X, y_prob, y_mag)
-                forecast = hybrid.predict(
-                    all_events, data, lst_cache, event_iono, event_space, event_weather
-                )
-                if forecast['probability'] > 0.2:
-                    logger.info(f"🔮 Гибрид: вероятность M≥6.0 = {forecast['probability']*100:.1f}%")
-                    if TG_AVAILABLE and chat_id:
-                        msg = (
-                            f"🔮 <b>ГИБРИДНЫЙ ПРОГНОЗ (резерв)</b>\n"
-                            f"Вероятность M≥6.0: {forecast['probability']*100:.1f}%\n"
-                            f"Прогнозируемая магнитуда: {forecast['magnitude']:.1f}\n"
-                            f"Ожидаемое время: через {forecast['days']} дней"
+                # Удаляем строки с пропусками
+                df_features = df_features.dropna(subset=feature_names)
+            
+                if len(df_features) >= 7:
+                    last_events = df_features.tail(7)
+                    X = last_events[feature_names].values
+                    X = X.reshape(1, 7, len(feature_names))
+                    X_scaled = scaler.transform(X.reshape(-1, len(feature_names))).reshape(X.shape)
+                
+                    prob = model.predict(X_scaled, verbose=0)[0][0]
+                    pred_mag = last_events['magnitude'].max() * (0.5 + prob * 0.5)
+                
+                    logger.info(f"🔮 LSTM Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
+                    logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
+                
+                    # Отправка в Telegram
+                    if TG_AVAILABLE and chat_id and prob > 0.2:
+                        if prob > 0.5:
+                            status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
+                        elif prob > 0.3:
+                            status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
+                        else:
+                            status = "✅ Ситуация стабильна. Риск низкий."
+                    
+                        forecast_msg = (
+                            f"🧠 <b>LSTM ПРОГНОЗ</b>\n"
+                            f"{'─' * 30}\n"
+                            f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
+                            f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
+                            f"{'─' * 30}\n"
+                            f"{status}"
                         )
-                        url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
-                        requests.post(url, data=payload, timeout=30)
-                        logger.info("✅ Гибридный прогноз отправлен в Telegram")
-            else:
-                logger.info("ℹ️ Недостаточно данных для гибридного прогноза")
-        else:
-            logger.info("ℹ️ Резервный гибридный прогноз недоступен")
+                        try:
+                            url = f"https://api.telegram.org/bot{token}/sendMessage"
+                            payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
+                            requests.post(url, data=payload, timeout=30)
+                            logger.info("✅ LSTM прогноз отправлен в Telegram")
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки: {e}")
+                else:
+                    logger.info(f"ℹ️ Недостаточно данных для LSTM прогноза (нужно ≥7, есть {len(df_features)})")
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка LSTM: {e}")
     else:
-        logger.info("✅ LSTM прогноз успешно отправлен")
+        logger.info("ℹ️ LSTM-прогнозирование пропущено (модуль недоступен или нет данных)")
+    
     # ═══════════════════════════════════════════
     # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
     # ═══════════════════════════════════════════════════════════════
@@ -781,6 +780,12 @@ def main():
                 lon = zone_data['lon']
                 current_anomalies = zone_data['events']
                 risk = zone_analyzer.calculate_zone_risk(zone_id, lat, lon, current_anomalies)
+                
+                # Получаем название зоны из zone_analyzer (или используем zone_id)
+                zone_name = zone_analyzer.get_zone_name(zone_id)
+                if not zone_name:
+                    zone_name = f"Зона {zone_id}"  # запасной вариант
+                
                 zone_reports.append({
                     'zone_id': zone_id,
                     'zone_name': zone_name,
