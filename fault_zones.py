@@ -127,6 +127,23 @@ class FaultZoneAnalyzer:
             logger.error(f"Ошибка загрузки истории для зоны {zone_id}: {e}")
             return pd.DataFrame()
 
+    def get_zone_name(self, zone_id):
+        """Возвращает название зоны по ID."""
+        if self.gdf is None:
+            return None
+        try:
+            row = self.gdf[self.gdf['id'] == zone_id]
+            if not row.empty:
+                name = row.iloc[0].get('name')
+                if name:
+                    return name
+                region = row.iloc[0].get('region')
+                if region:
+                    return region
+            return None
+        except:
+            return None
+    
     def calculate_zone_risk(self, zone_id, lat, lon, current_anomalies):
         """
         Рассчитывает итоговый риск для зоны на основе:
