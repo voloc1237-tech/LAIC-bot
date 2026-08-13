@@ -115,14 +115,14 @@ try:
     ANOMALY_AVAILABLE = True
 except ImportError:
     ANOMALY_AVAILABLE = False
-
-# LSTM прогнозирование — ИСПРАВЛЕНО: новый класс
+# LSTM
 try:
-    from predictor import EarthquakeLSTMPredictor
+    from tensorflow.keras.models import load_model
+    import pickle
     LSTM_AVAILABLE = True
 except ImportError:
     LSTM_AVAILABLE = False
-    logger.warning("⚠️ LSTM predictor не доступен")
+    logger.warning("⚠️ LSTM модуль недоступен (tensorflow не установлен)")
 
 # LAIC прогнозирование (градиентный бустинг)
 try:
