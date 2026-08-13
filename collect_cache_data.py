@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — быстрый сбор данных за период (2024).
+collect_cache_data.py — быстрый сбор данных за период (2022).
 """
 
 import os
@@ -29,9 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('CacheCollector')
 
-# ===== НАСТРОЙКА ПЕРИОДА (2024) =====
-START_DATE = datetime(2024, 8, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2024, 12, 31, tzinfo=timezone.utc)
+# ===== НАСТРОЙКА ПЕРИОДА (2022) =====
+START_DATE = datetime(2022, 8, 1, tzinfo=timezone.utc)
+END_DATE = datetime(2022, 12, 31, tzinfo=timezone.utc)
 MIN_MAGNITUDE = 5.0
 # =====================================
 
