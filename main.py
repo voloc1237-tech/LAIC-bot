@@ -430,19 +430,11 @@ def main():
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1e: LSTM-ПРОГНОЗИРОВАНИЕ
     # ═══════════════════════════════════════════════════════════════
-    try:
-        from tensorflow.keras.models import load_model
-        import pickle
-        LSTM_AVAILABLE = True
-    except ImportError:
-        LSTM_AVAILABLE = False
-        logger.warning("⚠️ LSTM модуль недоступен")
+    logger.info("\n" + "=" * 70)
+    logger.info("🔮 ЭТАП 1e: LSTM-прогнозирование")
+    logger.info("=" * 70)
 
     if LSTM_AVAILABLE and not all_events.empty:
-        logger.info("\n" + "=" * 70)
-        logger.info("🔮 ЭТАП 1e: LSTM-прогнозирование")
-        logger.info("=" * 70)
-    
         model_path = "models/lstm_model.keras"
         scaler_path = "models/lstm_scaler.pkl"
     
@@ -450,10 +442,17 @@ def main():
             logger.warning("⚠️ LSTM модель не найдена. Запустите train_lstm_model.py")
         else:
             try:
+                # Отключаем GPU предупреждения
+                os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+            
                 model = load_model(model_path)
                 with open(scaler_path, 'rb') as f:
                     scaler = pickle.load(f)
                 logger.info("✅ LSTM модель загружена")
+            
+                # ===== ДИАГНОСТИКА СКЕЙЛЕРА =====
+                logger.info(f"📊 Скейлер: min={scaler.min_}, scale={scaler.scale_}")
+                # ================================
             
                 # ===== СОБИРАЕМ ПРИЗНАКИ =====
                 feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
@@ -462,45 +461,79 @@ def main():
                 # Создаём DataFrame с признаками
                 df_features = all_events[['id', 'magnitude', 'depth_km', 'time']].copy()
             
+                # Инициализируем колонки нулями
+                for col in feature_names:
+                    if col not in df_features.columns:
+                        df_features[col] = 0.0
+            
                 for idx, row in df_features.iterrows():
                     event_id = row['id']
+                
                     # LST
                     lst_data = lst_cache.get('global', {})
-                    df_features.at[idx, 'lst_celsius'] = lst_data.get('lst_celsius', 0)
+                    if lst_data and isinstance(lst_data, dict):
+                        df_features.at[idx, 'lst_celsius'] = lst_data.get('lst_celsius', 0)
+                    else:
+                        df_features.at[idx, 'lst_celsius'] = 0
                 
                     # Погода
                     weather_data = event_weather.get(event_id)
-                    if weather_data is not None and not weather_data.empty:
+                    if weather_data is not None and hasattr(weather_data, 'empty') and not weather_data.empty:
                         df_features.at[idx, 'temp_mean'] = weather_data['temp_2m_mean'].mean()
                         df_features.at[idx, 'humidity_mean'] = weather_data['humidity_2m_mean'].mean()
                     else:
                         df_features.at[idx, 'temp_mean'] = 0
                         df_features.at[idx, 'humidity_mean'] = 0
                 
-                    # TEC
+                    # TEC (ионосфера)
                     iono_data = event_iono.get(event_id, {})
-                    tec_df = iono_data.get('tec', pd.DataFrame())
-                    df_features.at[idx, 'tec_mean'] = tec_df['tec_value'].mean() if not tec_df.empty else 0
+                    if iono_data and isinstance(iono_data, dict):
+                        tec_df = iono_data.get('tec', pd.DataFrame())
+                        if tec_df is not None and hasattr(tec_df, 'empty') and not tec_df.empty:
+                            df_features.at[idx, 'tec_mean'] = tec_df['tec_value'].mean()
+                        else:
+                            df_features.at[idx, 'tec_mean'] = 0
+                    else:
+                        df_features.at[idx, 'tec_mean'] = 0
                 
                     # Космическая погода
                     space_data = event_space.get(event_id, {})
-                    kp_df = space_data.get('kp', pd.DataFrame())
-                    dst_df = space_data.get('dst', pd.DataFrame())
-                    f107_df = space_data.get('f107', pd.DataFrame())
-                    df_features.at[idx, 'kp_mean'] = kp_df['kp'].mean() if not kp_df.empty else 0
-                    df_features.at[idx, 'dst_mean'] = dst_df['dst'].mean() if not dst_df.empty else 0
-                    df_features.at[idx, 'f107_mean'] = f107_df['f107'].mean() if not f107_df.empty else 0
+                    if space_data and isinstance(space_data, dict):
+                        kp_df = space_data.get('kp', pd.DataFrame())
+                        dst_df = space_data.get('dst', pd.DataFrame())
+                        f107_df = space_data.get('f107', pd.DataFrame())
+                        df_features.at[idx, 'kp_mean'] = kp_df['kp'].mean() if hasattr(kp_df, 'empty') and not kp_df.empty else 0
+                        df_features.at[idx, 'dst_mean'] = dst_df['dst'].mean() if hasattr(dst_df, 'empty') and not dst_df.empty else 0
+                        df_features.at[idx, 'f107_mean'] = f107_df['f107'].mean() if hasattr(f107_df, 'empty') and not f107_df.empty else 0
+                    else:
+                        df_features.at[idx, 'kp_mean'] = 0
+                        df_features.at[idx, 'dst_mean'] = 0
+                        df_features.at[idx, 'f107_mean'] = 0
             
                 # Удаляем строки с пропусками
                 df_features = df_features.dropna(subset=feature_names)
             
                 if len(df_features) >= 7:
                     last_events = df_features.tail(7)
+                
+                    # ===== ДИАГНОСТИКА ВХОДНЫХ ДАННЫХ =====
+                    logger.info(f"📊 Входные данные для LSTM:")
+                    logger.info(f"   Последняя магнитуда: {last_events['magnitude'].values}")
+                    logger.info(f"   Средний Kp: {last_events['kp_mean'].values}")
+                    logger.info(f"   Средний TEC: {last_events['tec_mean'].values}")
+                    # ======================================
+                
                     X = last_events[feature_names].values
                     X = X.reshape(1, 7, len(feature_names))
                     X_scaled = scaler.transform(X.reshape(-1, len(feature_names))).reshape(X.shape)
                 
                     prob = model.predict(X_scaled, verbose=0)[0][0]
+                
+                    # Ограничиваем вероятность (чтобы не было 100%)
+                    if prob > 0.95:
+                        prob = 0.85
+                        logger.warning("⚠️ Вероятность >95% ограничена до 85%")
+                
                     pred_mag = last_events['magnitude'].max() * (0.5 + prob * 0.5)
                 
                     logger.info(f"🔮 LSTM Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
@@ -535,8 +568,37 @@ def main():
                 
             except Exception as e:
                 logger.error(f"❌ Ошибка LSTM: {e}")
+                # Если LSTM не сработал, пробуем гибридный прогноз (резерв)
+                logger.info("🔄 Пробуем гибридный прогноз (резерв)...")
+                try:
+                    from hybrid_predictor import HybridEarthquakePredictor
+                    hybrid = HybridEarthquakePredictor(model_dir="data/models")
+                    X, y_prob, y_mag = hybrid.prepare_tabular_features(
+                        all_events, data, lst_cache, event_iono, event_space, event_weather
+                    )
+                    if len(X) >= 30:
+                        hybrid.train(X, y_prob, y_mag)
+                        forecast = hybrid.predict(
+                            all_events, data, lst_cache, event_iono, event_space, event_weather
+                        )
+                        if forecast['probability'] > 0.2 and TG_AVAILABLE and chat_id:
+                            msg = (
+                                f"🔮 <b>ГИБРИДНЫЙ ПРОГНОЗ (резерв)</b>\n"
+                                f"Вероятность M≥6.0: {forecast['probability']*100:.1f}%\n"
+                                f"Прогнозируемая магнитуда: {forecast['magnitude']:.1f}\n"
+                                f"Ожидаемое время: через {forecast['days']} дней"
+                            )
+                            url = f"https://api.telegram.org/bot{token}/sendMessage"
+                            payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
+                            requests.post(url, data=payload, timeout=30)
+                            logger.info("✅ Гибридный прогноз отправлен в Telegram")
+                except Exception as e2:
+                    logger.error(f"❌ Гибридный прогноз тоже не сработал: {e2}")
     else:
-        logger.info("ℹ️ LSTM-прогнозирование пропущено (модуль недоступен или нет данных)")
+        if not LSTM_AVAILABLE:
+            logger.info("ℹ️ LSTM-прогнозирование пропущено (модуль недоступен)")
+        else:
+            logger.info("ℹ️ LSTM-прогнозирование пропущено (нет данных)")
     
     # ═══════════════════════════════════════════
     # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
