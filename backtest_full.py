@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger('Backtest')
 
 class Backtester:
-    def __init__(self, cache_path="data/cache_202308_202312.json"):
+    def __init__(self, cache_path="data/cache_202408_202412.json"):
         self.cache_path = Path(cache_path)
         self.df = None
         self.load_cache()
@@ -160,7 +160,7 @@ class Backtester:
         print("="*60)
 
 if __name__ == "__main__":
-    bt = Backtester(cache_path="data/cache_202308_202312.json")
-    start = datetime(2023, 10, 1, tzinfo=timezone.utc)  # тестовый период (2 месяца)
-    end = datetime(2023, 12, 31, tzinfo=timezone.utc)
+    bt = Backtester(cache_path="data/cache_202408_202412.json")
+    start = datetime(2024, 10, 1, tzinfo=timezone.utc)  # тестовый период (2 месяца)
+    end = datetime(2024, 12, 31, tzinfo=timezone.utc)
     bt.run(start, end, prediction_window=7)
