@@ -7,6 +7,7 @@ backtest_full.py — быстрый бэктест с использование
 import os
 import sys
 import pickle
+import json
 import logging
 import pandas as pd
 import numpy as np
@@ -28,8 +29,15 @@ class Backtester:
         if not self.cache_path.exists():
             logger.error(f"❌ Файл кэша {self.cache_path} не найден")
             return False
-        with open(self.cache_path, 'rb') as f:
-            data = pickle.load(f)
+        
+        # Определяем формат по расширению файла
+        if self.cache_path.suffix == '.json':
+            with open(self.cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:  # .pkl
+            with open(self.cache_path, 'rb') as f:
+                data = pickle.load(f)
+        
         self.df = pd.DataFrame(data)
         self.df['time'] = pd.to_datetime(self.df['time'], utc=True)
         self.df.sort_values('time', inplace=True)
