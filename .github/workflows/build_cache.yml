@@ -39,10 +39,15 @@ jobs:
       - name: Upload cache as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cache-2024
-          path: |
-            data/cache_2024.json
-            data/cache_2024.pkl
+          name: cache-data
+          path: data/cache_*.json  # ← захватит все JSON-файлы
+     # - name: Upload cache as artifact
+       # uses: actions/upload-artifact@v4
+       # with:
+          #name: cache-2024
+          #path: |
+           # data/cache_2024.json
+           # data/cache_2024.pkl
 
       - name: Commit and push to repo (опционально)
         if: always()  # даже если были ошибки, попробуем закоммитить то, что есть
