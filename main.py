@@ -428,58 +428,118 @@ def main():
 
 
     # ═══════════════════════════════════════════════════════════════
-    # ЭТАП 1e: ГИБРИДНОЕ ПРОГНОЗИРОВАНИЕ
+    # ЭТАП 1e: ПРОГНОЗИРОВАНИЕ (LSTM + резервный гибрид)
     # ═══════════════════════════════════════════════════════════════
-    try:
-        from hybrid_predictor import HybridEarthquakePredictor
-        HYBRID_AVAILABLE = True
-    except ImportError:
-        HYBRID_AVAILABLE = False
-        logger.warning("⚠️ Гибридный прогноз недоступен")
 
-    if HYBRID_AVAILABLE and not all_events.empty:
-        logger.info("\n" + "=" * 70)
-        logger.info("🔮 ЭТАП 1e: Гибридное прогнозирование (LSTM + CatBoost + XGBoost)")
-        logger.info("=" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info("🔮 ЭТАП 1e: Прогнозирование")
+    logger.info("=" * 70)
+
+    forecast_sent = False
+
+    # 1. Пробуем LSTM (основной метод)
+    try:
+        from tensorflow.keras.models import load_model
+        import pickle
+        LSTM_AVAILABLE = True
+    except ImportError:
+        LSTM_AVAILABLE = False
+        logger.warning("⚠️ LSTM модуль недоступен")
+
+    if LSTM_AVAILABLE and not all_events.empty and len(all_events) >= 7:
+        model_path = "models/lstm_model.keras"
+        scaler_path = "models/lstm_scaler.pkl"
     
-        hybrid = HybridEarthquakePredictor(model_dir="data/models")
-    
-        # Подготовка данных для обучения
-        X, y_prob, y_mag = hybrid.prepare_tabular_features(
-            all_events, data, lst_cache, event_iono, event_space, event_weather
-        )
-    
-        if len(X) >= 30:
-            # Обучение
-            hybrid.train(X, y_prob, y_mag)
-        
-            # Прогноз на текущий момент
-            forecast = hybrid.predict(
+        if os.path.exists(model_path) and os.path.exists(scaler_path):
+            try:
+                model = load_model(model_path)
+                with open(scaler_path, 'rb') as f:
+                    scaler = pickle.load(f)
+                logger.info("✅ LSTM модель загружена")
+            
+                feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
+                               'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
+            
+                last_events = all_events.tail(7)
+                X = last_events[feature_names].values
+                X = X.reshape(1, 7, len(feature_names))
+                X_scaled = scaler.transform(X.reshape(-1, len(feature_names))).reshape(X.shape)
+            
+                prob = model.predict(X_scaled, verbose=0)[0][0]
+                pred_mag = last_events['magnitude'].max() * (0.5 + prob * 0.5)
+            
+                logger.info(f"🔮 LSTM: вероятность M≥6.0 = {prob*100:.1f}%, магнитуда {pred_mag:.2f}")
+            
+                # Отправка в Telegram (основной прогноз)
+                if TG_AVAILABLE and chat_id and prob > 0.2:
+                    if prob > 0.5:
+                        status = "⚠️ ПОВЫШЕННОЕ ВНИМАНИЕ! Возможно сильное землетрясение."
+                    elif prob > 0.3:
+                        status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
+                    else:
+                        status = "✅ Ситуация стабильна. Риск низкий."
+                
+                    forecast_msg = (
+                        f"🧠 <b>LSTM ПРОГНОЗ</b>\n"
+                        f"{'─' * 30}\n"
+                        f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
+                        f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
+                        f"{'─' * 30}\n"
+                        f"{status}"
+                    )
+                    try:
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        payload = {'chat_id': chat_id, 'text': forecast_msg, 'parse_mode': 'HTML'}
+                        requests.post(url, data=payload, timeout=30)
+                        logger.info("✅ LSTM прогноз отправлен в Telegram")
+                        forecast_sent = True
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка отправки: {e}")
+            
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка LSTM: {e}")
+        else:
+            logger.warning("⚠️ LSTM модель не найдена. Запустите train_lstm_model.py")
+
+    # 2. Если LSTM не сработал — используем гибрид (резерв)
+    if not forecast_sent:
+        try:
+            from hybrid_predictor import HybridEarthquakePredictor
+            HYBRID_AVAILABLE = True
+        except ImportError:
+            HYBRID_AVAILABLE = False
+
+        if HYBRID_AVAILABLE and not all_events.empty:
+            logger.info("🔄 Использую гибридный прогноз (резерв)")
+            hybrid = HybridEarthquakePredictor(model_dir="data/models")
+            X, y_prob, y_mag = hybrid.prepare_tabular_features(
                 all_events, data, lst_cache, event_iono, event_space, event_weather
             )
-        
-            if forecast['probability'] > 0.2:
-                logger.info(f"🔮 Прогноз: вероятность M≥6.0 = {forecast['probability']*100:.1f}%")
-                logger.info(f"   Магнитуда: {forecast['magnitude']:.1f}, метод: {forecast['method']}")
-            
-                # Отправка в Telegram
-                if TG_AVAILABLE and chat_id:
-                    msg = (
-                        f"🔮 <b>ГИБРИДНЫЙ ПРОГНОЗ</b>\n"
-                        f"Вероятность M≥6.0: {forecast['probability']*100:.1f}%\n"
-                        f"Прогнозируемая магнитуда: {forecast['magnitude']:.1f}\n"
-                        f"Ожидаемое время: через {forecast['days']} дней\n"
-                        f"Модель: {forecast['method']}"
-                    )
-                    # Отправка
-                    url = f"https://api.telegram.org/bot{token}/sendMessage"
-                    payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
-                    requests.post(url, data=payload, timeout=30)
+            if len(X) >= 30:
+                hybrid.train(X, y_prob, y_mag)
+                forecast = hybrid.predict(
+                    all_events, data, lst_cache, event_iono, event_space, event_weather
+                )
+                if forecast['probability'] > 0.2:
+                    logger.info(f"🔮 Гибрид: вероятность M≥6.0 = {forecast['probability']*100:.1f}%")
+                    if TG_AVAILABLE and chat_id:
+                        msg = (
+                            f"🔮 <b>ГИБРИДНЫЙ ПРОГНОЗ (резерв)</b>\n"
+                            f"Вероятность M≥6.0: {forecast['probability']*100:.1f}%\n"
+                            f"Прогнозируемая магнитуда: {forecast['magnitude']:.1f}\n"
+                            f"Ожидаемое время: через {forecast['days']} дней"
+                        )
+                        url = f"https://api.telegram.org/bot{token}/sendMessage"
+                        payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
+                        requests.post(url, data=payload, timeout=30)
+                        logger.info("✅ Гибридный прогноз отправлен в Telegram")
             else:
-                logger.info("ℹ️ Риск низкий, прогноз не отправлен")
+                logger.info("ℹ️ Недостаточно данных для гибридного прогноза")
         else:
-            logger.info(f"ℹ️ Недостаточно данных для гибридного обучения ({len(X)} точек)")
-    # ═══════════════════════════════════════════════════════════════
+            logger.info("ℹ️ Резервный гибридный прогноз недоступен")
+    else:
+        logger.info("✅ LSTM прогноз успешно отправлен")
+    # ═══════════════════════════════════════════
     # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
     # ═══════════════════════════════════════════════════════════════
     #if LSTM_AVAILABLE and not all_events.empty:
