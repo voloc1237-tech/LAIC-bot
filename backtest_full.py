@@ -39,7 +39,8 @@ class Backtester:
                 data = pickle.load(f)
         
         self.df = pd.DataFrame(data)
-        self.df['time'] = pd.to_datetime(self.df['time'], utc=True)
+        # Исправленный парсинг времени с указанием формата ISO8601
+        self.df['time'] = pd.to_datetime(self.df['time'], utc=True, format='ISO8601')
         self.df.sort_values('time', inplace=True)
         logger.info(f"✅ Загружено {len(self.df)} событий из кэша")
         return True
