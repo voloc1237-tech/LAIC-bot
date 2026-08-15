@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-train_coord_lstm.py — обучение LSTM для прогноза координат
+train_zone_lstm.py — обучение LSTM для классификации регионов
 """
 
 import os
@@ -9,6 +9,7 @@ import sys
 import pickle
 import logging
 import numpy as np
+import pandas as pd
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -18,121 +19,89 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    import math
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c
+def prepare_sequences(df, sequence_length=7, prediction_window=7):
+    feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
+                     'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
 
+    X, y = [], []
+    df_sorted = df.sort_values('time').reset_index(drop=True)
 
-def build_model(input_shape):
-    model = Sequential([
-        LSTM(64, activation='relu', return_sequences=True, input_shape=input_shape),
-        Dropout(0.2),
-        LSTM(32, activation='relu', return_sequences=False),
-        Dropout(0.2),
-        Dense(16, activation='relu'),
-        Dense(2)
-    ])
-    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
-    return model
+    for i in range(sequence_length, len(df_sorted) - prediction_window):
+        X.append(df_sorted.iloc[i-sequence_length:i][feature_names].values)
+        y.append(df_sorted.iloc[i + prediction_window]['region_id'])
+
+    return np.array(X), np.array(y)
 
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧠 ОБУЧЕНИЕ LSTM ДЛЯ ПРОГНОЗА КООРДИНАТ")
+    logger.info("🧠 ОБУЧЕНИЕ LSTM ДЛЯ КЛАССИФИКАЦИИ РЕГИОНОВ")
     logger.info("=" * 60)
 
     data_dir = Path(__file__).parent.parent / "data"
     models_dir = Path(__file__).parent.parent / "models"
     models_dir.mkdir(exist_ok=True)
 
-    X = np.load(data_dir / "X_coords.npy")
-    y_coords = np.load(data_dir / "y_coords.npy")
+    # Загружаем данные
+    df = pd.read_pickle(data_dir / "events_with_regions.pkl")
+    n_classes = df['region_id'].nunique()
 
-    logger.info(f"📊 Данные: X={X.shape}, y={y_coords.shape}")
+    logger.info(f"📊 Данные: {len(df)} событий, {n_classes} регионов")
 
-    # ===== МАСШТАБИРОВАНИЕ =====
+    # Подготавливаем последовательности
+    X, y = prepare_sequences(df, sequence_length=7, prediction_window=7)
+    logger.info(f"   Последовательностей: {len(X)}")
+
+    # Масштабируем признаки
     n_samples, n_steps, n_features = X.shape
-    
-    scaler_X = StandardScaler()
+    scaler = StandardScaler()
     X_flat = X.reshape(-1, n_features)
-    X_scaled = scaler_X.fit_transform(X_flat).reshape(X.shape)
+    X_scaled = scaler.fit_transform(X_flat).reshape(X.shape)
 
-    scaler_y = StandardScaler()
-    y_scaled = scaler_y.fit_transform(y_coords)
-
-    # Сохраняем скейлеры
-    with open(models_dir / "scaler_X.pkl", 'wb') as f:
-        pickle.dump(scaler_X, f)
-    with open(models_dir / "scaler_y.pkl", 'wb') as f:
-        pickle.dump(scaler_y, f)
-    logger.info("✅ Скейлеры сохранены")
+    # Сохраняем скейлер
+    with open(models_dir / "scaler_zone.pkl", 'wb') as f:
+        pickle.dump(scaler, f)
 
     # Разделяем
-    X_temp, X_test, y_temp, y_test = train_test_split(X_scaled, y_scaled, test_size=0.2, random_state=42)
-    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.25, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.25, random_state=42)
+
+    # Строим модель
+    model = Sequential([
+        LSTM(64, activation='relu', return_sequences=True, input_shape=(n_steps, n_features)),
+        Dropout(0.2),
+        LSTM(32, activation='relu', return_sequences=False),
+        Dropout(0.2),
+        Dense(16, activation='relu'),
+        Dense(n_classes, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
     # Обучаем
-    model = build_model((X.shape[1], X.shape[2]))
     early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
     logger.info("⚡ Обучение модели...")
-    history = model.fit(
-        X_train, y_train,
-        epochs=50,
-        batch_size=32,
-        validation_data=(X_val, y_val),
-        callbacks=[early_stop],
-        verbose=1
-    )
+    model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val), callbacks=[early_stop], verbose=1)
 
     # Оценка
-    y_pred_scaled = model.predict(X_test)
-    y_pred = scaler_y.inverse_transform(y_pred_scaled)
-    y_test_orig = scaler_y.inverse_transform(y_test)
-
-    distances = []
-    for i in range(len(y_test_orig)):
-        dist = haversine_distance(
-            y_test_orig[i][0], y_test_orig[i][1],
-            y_pred[i][0], y_pred[i][1]
-        )
-        distances.append(dist)
-
-    avg_distance = np.mean(distances)
-    median_distance = np.median(distances)
-    p75_distance = np.percentile(distances, 75)
+    y_pred = np.argmax(model.predict(X_test), axis=1)
 
     logger.info("=" * 60)
     logger.info("📊 РЕЗУЛЬТАТЫ НА ТЕСТОВОЙ ВЫБОРКЕ:")
-    logger.info(f"  Среднее расстояние: {avg_distance:.1f} км")
-    logger.info(f"  Медианное расстояние: {median_distance:.1f} км")
-    logger.info(f"  75-й перцентиль: {p75_distance:.1f} км")
+    logger.info(f"  Accuracy:  {accuracy_score(y_test, y_pred):.3f}")
+    logger.info(f"  Precision: {precision_score(y_test, y_pred, average='weighted', zero_division=0):.3f}")
+    logger.info(f"  Recall:    {recall_score(y_test, y_pred, average='weighted', zero_division=0):.3f}")
+    logger.info(f"  F1-score:  {f1_score(y_test, y_pred, average='weighted', zero_division=0):.3f}")
     logger.info("=" * 60)
 
-    # Сохраняем модель и метрики
-    model.save(models_dir / "coord_lstm_model.keras")
-    
-    metrics = {
-        'avg_distance_km': float(avg_distance),
-        'median_distance_km': float(median_distance),
-        'p75_distance_km': float(p75_distance)
-    }
-    with open(models_dir / "coord_metrics.pkl", 'wb') as f:
-        pickle.dump(metrics, f)
-
-    logger.info(f"✅ Модель сохранена в {models_dir / 'coord_lstm_model.keras'}")
-    logger.info(f"✅ Метрики сохранены в {models_dir / 'coord_metrics.pkl'}")
+    # Сохраняем модель
+    model.save(models_dir / "zone_lstm_model.keras")
+    logger.info(f"✅ Модель сохранена в {models_dir / 'zone_lstm_model.keras'}")
 
 
 if __name__ == "__main__":
