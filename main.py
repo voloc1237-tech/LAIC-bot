@@ -10,6 +10,7 @@ import sys
 import logging
 import pandas as pd
 import requests
+import numpy as np
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
