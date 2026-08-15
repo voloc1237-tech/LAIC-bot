@@ -1,0 +1,44 @@
+name: Train Coordinate LSTM Model
+
+on:
+  workflow_dispatch:   # запуск вручную
+  schedule:
+    - cron: '0 0 1 * *'   # 1-го числа каждого месяца (опционально)
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install tensorflow scikit-learn pandas numpy
+
+      - name: Prepare data
+        run: python scripts/prepare_coord_data.py
+
+      - name: Train model
+        run: python scripts/train_coord_lstm.py
+
+      - name: Upload model
+        uses: actions/upload-artifact@v4
+        with:
+          name: coord-lstm-model
+          path: models/coord_lstm_model.keras
+
+      - name: Commit and push model
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/coord_lstm_model.keras models/coord_metrics.pkl || true
+          git diff --cached --quiet || git commit -m "Update coordinate LSTM model [skip ci]"
+          git push || echo "Push failed"
