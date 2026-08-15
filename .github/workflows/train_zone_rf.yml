@@ -31,7 +31,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zone-rf-model
-          path: models/zone_rf_model.pkl
+          path: |
+            models/zone_rf_model.pkl
+            models/scaler_rf.pkl
+            models/feature_importance.pkl
 
       - name: Commit and push model
         run: |
