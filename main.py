@@ -631,7 +631,7 @@ def main():
             region_id = rf_model.predict(features_scaled)[0]
         
             # Загружаем словарь регионов
-            import pandas as pd
+            
             df_regions = pd.read_pickle("data/events_with_regions.pkl")
             region_mapping = df_regions[['region_id', 'region']].drop_duplicates().set_index('region_id').to_dict()['region']
             region_name = region_mapping.get(region_id, "Неизвестный регион")
