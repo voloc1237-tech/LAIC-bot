@@ -1,7 +1,7 @@
 name: Train Zone RandomForest Model
 
 on:
-  workflow_dispatch:   # запуск вручную
+  workflow_dispatch:
 
 jobs:
   train:
@@ -27,27 +27,8 @@ jobs:
       - name: Train RandomForest model
         run: python scripts/train_zone_rf.py
 
-      - name: Create region mapping from data
-        run: |
-          python -c "
-import pickle
-import pandas as pd
-from pathlib import Path
-
-# Загружаем данные с регионами
-df = pd.read_pickle('data/events_with_regions.pkl')
-
-# Создаём словарь {region_id: region_name} из всех уникальных регионов
-region_mapping = df[['region_id', 'region']].drop_duplicates().set_index('region_id').to_dict()['region']
-
-print(f'✅ Загружено {len(region_mapping)} регионов из events_with_regions.pkl')
-
-# Сохраняем
-with open('data/region_mapping.pkl', 'wb') as f:
-    pickle.dump(region_mapping, f)
-
-print('✅ region_mapping.pkl сохранён')
-"
+      - name: Create region mapping from GeoJSON
+        run: python scripts/create_region_mapping.py
 
       - name: Upload model
         uses: actions/upload-artifact@v4
