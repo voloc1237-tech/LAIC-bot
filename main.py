@@ -599,7 +599,57 @@ def main():
             logger.info("ℹ️ LSTM-прогнозирование пропущено (модуль недоступен)")
         else:
             logger.info("ℹ️ LSTM-прогнозирование пропущено (нет данных)")
-    
+
+    # ===== ПРОГНОЗ РЕГИОНА (RandomForest) =====
+    try:
+        with open("models/zone_rf_model.pkl", 'rb') as f:
+            rf_model = pickle.load(f)
+        with open("models/scaler_rf.pkl", 'rb') as f:
+            rf_scaler = pickle.load(f)
+        RF_AVAILABLE = True
+        logger.info("✅ RF модель для прогноза региона загружена")
+    except Exception as e:
+        RF_AVAILABLE = False
+        logger.warning(f"⚠️ RF модель не загружена: {e}")
+
+    if RF_AVAILABLE and not all_events.empty:
+        try:
+            # Берём последнее событие для прогноза
+            last_event = all_events.iloc[-1]
+            features = np.array([[
+                last_event['magnitude'],
+                last_event['depth_km'],
+                last_event.get('lst_celsius', 0),
+                last_event.get('temp_mean', 0),
+                last_event.get('humidity_mean', 0),
+                last_event.get('tec_mean', 0),
+                last_event.get('kp_mean', 0),
+                last_event.get('dst_mean', 0),
+                last_event.get('f107_mean', 0)
+            ]])
+            features_scaled = rf_scaler.transform(features)
+            region_id = rf_model.predict(features_scaled)[0]
+        
+            # Загружаем словарь регионов
+            import pandas as pd
+            df_regions = pd.read_pickle("data/events_with_regions.pkl")
+            region_mapping = df_regions[['region_id', 'region']].drop_duplicates().set_index('region_id').to_dict()['region']
+            region_name = region_mapping.get(region_id, "Неизвестный регион")
+        
+            logger.info(f"📍 Прогноз региона: {region_name} (ID: {region_id})")
+        
+            # Отправляем в Telegram (если есть прогноз)
+            if TG_AVAILABLE and chat_id:
+                region_msg = f"📍 Прогнозируемый регион: {region_name}"
+                try:
+                    url = f"https://api.telegram.org/bot{token}/sendMessage"
+                    payload = {'chat_id': chat_id, 'text': region_msg, 'parse_mode': 'HTML'}
+                    requests.post(url, data=payload, timeout=30)
+                    logger.info("✅ Прогноз региона отправлен в Telegram")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки прогноза региона: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка прогноза региона: {e}")
     # ═══════════════════════════════════════════
     # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
     # ═══════════════════════════════════════════════════════════════
