@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-bot_interface.py — интерактивный интерфейс управления через aiogram 3.x
-Обрабатывает кнопки из главного отчета, выбор регионов, городов и расчет точек.
+bot_interface.py — interactive management interface via aiogram 3.x
+Handles buttons from the main report, region selection, cities, and point calculations.
 """
 
 import logging
@@ -19,7 +19,7 @@ from laic_analyzer import LAICAnalyzer
 
 logger = logging.getLogger(__name__)
 
-# Состояния FSM для пошагового диалога
+# FSM states for step-by-step dialog
 class ForecastStates(StatesGroup):
     waiting_for_region = State()
     waiting_for_point_choice = State()
@@ -27,7 +27,7 @@ class ForecastStates(StatesGroup):
 
 
 def get_settings():
-    """Загрузчик настроек из settings.yaml (или передается из main)."""
+    """Load settings from settings.yaml."""
     import yaml
     try:
         with open("config/settings.yaml", "r", encoding="utf-8") as f:
@@ -36,17 +36,17 @@ def get_settings():
         return {}
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# 1. ОБРАБОТКА ПЕРВЫХ КНОПОК ПОСЛЕ ГЛОБАЛЬНОГО ОТЧЁТА ("Да" / "Нет")
-# ═════════════════════════════════════════════════════════════════════════
+# ============================================================
+# 1. HANDLE FIRST BUTTONS AFTER GLOBAL REPORT ("Yes" / "No")
+# ============================================================
 
 async def handle_regions_yes(callback: CallbackQuery, state: FSMContext):
-    """Пользователь нажал «Да» — выводим список доступных регионов из конфига."""
+    """User clicked 'Yes' — show list of available regions from config."""
     settings = get_settings()
     regions = settings.get('regions', {})
     
     if not regions:
-        await callback.message.answer("⚠️ Список регионов в конфигурации не найден.")
+        await callback.message.answer("⚠️ Regions list not found in configuration.")
         await callback.answer()
         return
 
@@ -54,12 +54,12 @@ async def handle_regions_yes(callback: CallbackQuery, state: FSMContext):
     for key, cfg in regions.items():
         builder.button(text=cfg.get('name', key), callback_data=f"reg_{key}")
     
-    # Кнопка для ручного ввода координат/города
-    builder.button(text="📍 Ввести координаты / город", callback_data="reg_custom")
-    builder.adjust(1)  пять в один столбец
+    # Button for manual coordinates/city input
+    builder.button(text="📍 Enter coordinates / city", callback_data="reg_custom")
+    builder.adjust(1)  # one column
 
     await callback.message.answer(
-        "🗺 **Выберите регион для детального анализа** или укажите свою точку:",
+        "🗺 **Select a region for detailed analysis** or specify your location:",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
@@ -68,38 +68,38 @@ async def handle_regions_yes(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_regions_no(callback: CallbackQuery, state: FSMContext):
-    """Пользователь нажал «Нет» — завершаем диалог."""
-    await callback.message.answer("👍 Хорошо, глобальный мониторинг продолжается в обычном режиме.")
+    """User clicked 'No' — end the dialog."""
+    await callback.message.answer("👍 Okay, global monitoring continues in normal mode.")
     await state.clear()
     await callback.answer()
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# 2. ВЫБОР КОНКРЕТНОГО РЕГИОНА ИЗ СПИСКА
-# ═════════════════════════════════════════════════════════════════════════
+# ============================================================
+# 2. HANDLE SPECIFIC REGION SELECTION
+# ============================================================
 
 async def handle_region_selection(callback: CallbackQuery, state: FSMContext):
-    """Обрабатывает выбор конкретного региона из инлайн-меню."""
+    """Handle selection of a specific region from the inline menu."""
     region_key = callback.data.replace("reg_", "")
     settings = get_settings()
     regions = settings.get('regions', {})
     
     if region_key not in regions:
-        await callback.message.answer("❌ Регион не найден в конфигурации.")
+        await callback.message.answer("❌ Region not found in configuration.")
         await callback.answer()
         return
 
     cfg = regions[region_key]
     await state.update_data(region_key=region_key, region_config=cfg)
     
-    # Спрашиваем, нужен ли точечный анализ внутри региона
+    # Ask if user wants point analysis inside the region
     builder = InlineKeyboardBuilder()
-    builder.button(text="🎯 Да, уточнить город / точку", callback_data="point_yes")
-    builder.button(text="📊 Нет, проанализировать весь регион", callback_data="point_no")
+    builder.button(text="🎯 Yes, specify city / point", callback_data="point_yes")
+    builder.button(text="📊 No, analyze the whole region", callback_data="point_no")
     builder.adjust(1)
 
     await callback.message.answer(
-        f"Выбран регион: **{cfg.get('name')}**.\nХотите ввести конкретный город или координаты внутри этого региона?",
+        f"Selected region: **{cfg.get('name')}**.\nDo you want to enter a specific city or coordinates within this region?",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
@@ -107,14 +107,14 @@ async def handle_region_selection(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# 3. ТОЧЕЧНЫЙ АНАЛИЗ (ГОРОД ИЛИ КООРДИНАТЫ)
-# ═════════════════════════════════════════════════════════════════════════
+# ============================================================
+# 3. POINT ANALYSIS (CITY OR COORDINATES)
+# ============================================================
 
 async def handle_point_choice_yes(callback: CallbackQuery, state: FSMContext):
-    """Пользователь хочет ввести точку/город."""
+    """User wants to enter a point/city."""
     await callback.message.answer(
-        "✍️ Введите название города (например, *Токио*) или координаты через запятую (например, `35.68, 139.65`):",
+        "✍️ Enter a city name (e.g., *Tokyo*) or coordinates separated by comma (e.g., `35.68, 139.65`):",
         parse_mode="Markdown"
     )
     await state.set_state(ForecastStates.waiting_for_coordinates)
@@ -122,12 +122,12 @@ async def handle_point_choice_yes(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_point_choice_no(callback: CallbackQuery, state: FSMContext):
-    """Пользователь отказался от точки — запускаем расчет по всему региону."""
+    """User declined point input — run analysis for the whole region."""
     data = await state.get_data()
     region_key = data.get('region_key')
     cfg = data.get('region_config')
     
-    await callback.message.answer(f"⏳ Собираю данные и запускаю LAIC-анализ для региона **{cfg.get('name')}**...")
+    await callback.message.answer(f"⏳ Collecting data and running LAIC analysis for **{cfg.get('name')}**...")
     
     settings = get_settings()
     collector = USGSCollector(
@@ -136,21 +136,21 @@ async def handle_point_choice_no(callback: CallbackQuery, state: FSMContext):
     )
     analyzer = LAICAnalyzer(settings)
     
-    # Сбор данных по региону
+    # Collect data for region
     days_back = settings.get('analysis', {}).get('history_days', 45)
     df = collector.fetch_for_region(cfg, days_back=days_back)
     
-    # Расчет
+    # Calculate
     result = analyzer.analyze_region(df, cfg.get('name'), cfg)
     
-    # Формируем отчет для пользователя
+    # Format report for user
     text = (
-        f"📊 **Результат анализа: {result['region']}** {result['emoji']}\n\n"
-        f"• **Уровень риска:** {result['risk_level'].upper()} (Балл: {result['risk_score']})\n"
-        f"• **Факторы:** {result['risk_factors']}\n"
-        f"• **Макс. магнитуда (7д):** {result['stats']['max_mag_7d']}\n"
-        f"• **Событий за 24ч:** {result['stats']['events_24h']}\n\n"
-        f"💡 *Рекомендация:* {result['recommendation']}"
+        f"📊 **Analysis result: {result['region']}** {result['emoji']}\n\n"
+        f"• **Risk level:** {result['risk_level'].upper()} (Score: {result['risk_score']})\n"
+        f"• **Factors:** {result['risk_factors']}\n"
+        f"• **Max magnitude (7d):** {result['stats']['max_mag_7d']}\n"
+        f"• **Events in 24h:** {result['stats']['events_24h']}\n\n"
+        f"💡 *Recommendation:* {result['recommendation']}"
     )
     
     await callback.message.answer(text, parse_mode="Markdown")
@@ -159,14 +159,14 @@ async def handle_point_choice_no(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_custom_location_input(message: Message, state: FSMContext):
-    """Обрабатывает введенный текст (город или координаты) и выполняет локальный радиусный анализ."""
+    """Handle user input (city or coordinates) and perform local radius analysis."""
     text_input = message.text.strip()
     settings = get_settings()
     
     lat, lon = None, None
     location_name = text_input
 
-    # 1. Пробуем распарсить как координаты ("lat, lon")
+    # Try to parse as coordinates ("lat, lon")
     try:
         parts = text_input.replace(";", ",").split(",")
         if len(parts) == 2:
@@ -175,20 +175,19 @@ async def handle_custom_location_input(message: Message, state: FSMContext):
     except ValueError:
         pass
 
-    # 2. Если не координаты, пробуем найти через простой словарь или геокодер
+    # If not coordinates, try to find via simple dictionary or geocoder
     if lat is None or lon is None:
-        # Простой встроенный словарь популярных точек для примера
         known_cities = {
-            "токио": (35.6762, 139.6503),
-            "стамбул": (41.0082, 28.9784),
-            "лос-анджелес": (34.0522, -118.2437),
-            "петропавловск-камчатский": (53.0452, 158.6559)
+            "tokyo": (35.6762, 139.6503),
+            "istanbul": (41.0082, 28.9784),
+            "los angeles": (34.0522, -118.2437),
+            "petropavlovsk-kamchatsky": (53.0452, 158.6559)
         }
         city_key = text_input.lower()
         if city_key in known_cities:
             lat, lon = known_cities[city_key]
         else:
-            # Попытка использовать geopy, если установлена
+            # Try using geopy if installed
             try:
                 from geopy.geocoders import Nominatim
                 geolocator = Nominatim(user_agent="laic_bot_geo")
@@ -200,12 +199,12 @@ async def handle_custom_location_input(message: Message, state: FSMContext):
                 pass
 
     if lat is None or lon is None:
-        await message.answer("❌ Не удалось распознать координаты или найти город. Попробуйте ввести координаты в формате `35.68, 139.65`.")
+        await message.answer("❌ Could not recognize coordinates or find city. Please try `35.68, 139.65`.")
         return
 
-    await message.answer(f"🔍 Ищу события в радиусе 150 км от точки: **{location_name}** ({lat}, {lon})...")
+    await message.answer(f"🔍 Searching for events within 150 km radius of: **{location_name}** ({lat}, {lon})...")
 
-    # Сбор глобальных данных за период и фильтрация по радиусу (например, ~1.5 градуса ≈ 150 км)
+    # Collect global data and filter by radius (~1.5 degrees ≈ 150 km)
     collector = USGSCollector(
         cache_enabled=settings.get('cache', {}).get('enabled', True),
         cache_max_age_hours=settings.get('cache', {}).get('max_age_hours', 6)
@@ -216,16 +215,15 @@ async def handle_custom_location_input(message: Message, state: FSMContext):
     end = datetime.now(timezone.utc)
     start = end - pd.Timedelta(days=days_back)
     
-    # Забираем глобальные данные
     min_mag = settings.get('analysis', {}).get('global_min_magnitude', 4.0)
     df_global = collector.fetch_global(start, end, min_magnitude=min_mag)
     
     if df_global.empty:
-        await message.answer("⚠️ Не удалось получить данные землетрясений для анализа точки.")
+        await message.answer("⚠️ Could not get earthquake data for point analysis.")
         await state.clear()
         return
 
-    # Фильтрация по радиусу (приблизительно 1.5 градуса по широте/долготе)
+    # Filter by radius (~1.5 degrees in lat/lon)
     radius_deg = 1.5
     df_point = df_global[
         (df_global['latitude'] >= lat - radius_deg) & 
@@ -234,48 +232,48 @@ async def handle_custom_location_input(message: Message, state: FSMContext):
         (df_global['longitude'] <= lon + radius_deg)
     ].copy()
 
-    # Запускаем LAIC-анализ для этой подвыборки
-    result = analyzer.analyze_region(df_point, f"Точка: {location_name}", {})
+    # Run LAIC analysis on this subset
+    result = analyzer.analyze_region(df_point, f"Point: {location_name}", {})
     
     report_text = (
-        f"🎯 **Локальный прогноз для точки:** {location_name} {result['emoji']}\n"
-        f"📍 Координаты: `{lat:.2f}, {lon:.2f}`\n\n"
-        f"• **Уровень риска:** {result['risk_level'].upper()} (Балл: {result['risk_score']})\n"
-        f"• **Факторы:** {result['risk_factors']}\n"
-        f"• **Событий в радиусе:** {result['stats']['total_events']}\n"
-        f"• **Макс. магнитуда (7д):** {result['stats']['max_mag_7d']}\n\n"
-        f"💡 *Рекомендация:* {result['recommendation']}"
+        f"🎯 **Local forecast for point:** {location_name} {result['emoji']}\n"
+        f"📍 Coordinates: `{lat:.2f}, {lon:.2f}`\n\n"
+        f"• **Risk level:** {result['risk_level'].upper()} (Score: {result['risk_score']})\n"
+        f"• **Factors:** {result['risk_factors']}\n"
+        f"• **Events in radius:** {result['stats']['total_events']}\n"
+        f"• **Max magnitude (7d):** {result['stats']['max_mag_7d']}\n\n"
+        f"💡 *Recommendation:* {result['recommendation']}"
     )
 
     await message.answer(report_text, parse_mode="Markdown")
     await state.clear()
 
 
-# ═════════════════════════════════════════════════════════════════════════
-- РЕГИСТРАЦИЯ ХЕНДЛЕРОВ В ДИСПЕТЧЕРЕ
-# ═════════════════════════════════════════════════════════════════════════
+# ============================================================
+# REGISTER HANDLERS IN DISPATCHER
+# ============================================================
 
 def register_handlers(dp: Dispatcher):
-    """Регистрирует все интерактивные колбэки и состояния в диспетчере aiogram."""
-    # 1. Ответы на кнопки главного отчета
+    """Register all interactive callbacks and states in the aiogram dispatcher."""
+    # 1. Responses to main report buttons
     dp.callback_query.register(handle_regions_yes, F.data == "regions_yes")
     dp.callback_query.register(handle_regions_no, F.data == "regions_no")
     
-    # 2. Выбор региона
+    # 2. Region selection
     dp.callback_query.register(handle_region_selection, F.data.startswith("reg_") & (F.data != "reg_custom"))
     
-    # Если нажали "Ввести координаты" из общего списка регионов
+    # If user clicked "Enter coordinates" from the region list
     @dp.callback_query(F.data == "reg_custom")
     async def custom_reg_handler(callback: CallbackQuery, state: FSMContext):
-        await callback.message.answer("✍️ Введите координаты (например, `35.68, 139.65`) или название города:")
+        await callback.message.answer("✍️ Enter coordinates (e.g., `35.68, 139.65`) or city name:")
         await state.set_state(ForecastStates.waiting_for_coordinates)
         await callback.answer()
 
-    # 3. Выбор точечного анализа внутри региона
+    # 3. Point analysis choice inside region
     dp.callback_query.register(handle_point_choice_yes, F.data == "point_yes")
     dp.callback_query.register(handle_point_choice_no, F.data == "point_no")
     
-    # 4. Текстовый ввод координат или города (FSM)
+    # 4. Text input for coordinates or city (FSM)
     dp.message.register(handle_custom_location_input, ForecastStates.waiting_for_coordinates)
     
-    logger.info("✅ Обработчики bot_interface успешно зарегистрированы.")
+    logger.info("✅ bot_interface handlers registered successfully.")
