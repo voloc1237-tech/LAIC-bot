@@ -1,23 +1,23 @@
-name: Build Cache Data
+name: Train Full Models (LSTM + RF)
 
 on:
-  workflow_dispatch:   # запуск вручную
+  workflow_dispatch:
     inputs:
-      year:
-        description: 'Год для сбора данных (2022, 2023, 2024 или all)'
+      train_lstm:
+        description: 'Обучить LSTM'
         required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - 2022
-          - 2023
-          - 2024
+        default: true
+        type: boolean
+      train_rf:
+        description: 'Обучить RF'
+        required: true
+        default: true
+        type: boolean
 
 jobs:
-  build-cache:
+  train:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 часов
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -30,43 +30,31 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install earthengine-api google-auth
+          pip install tensorflow scikit-learn pandas numpy
 
-      - name: Prepare Earth Engine key
-        env:
-          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
-        run: |
-          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d > /tmp/ee-key.json
-          echo "✅ EE key ready"
+      - name: Train LSTM
+        if: github.event.inputs.train_lstm == 'true'
+        run: python scripts/train_full_lstm.py
 
-      - name: Run collection script
-        env:
-          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
-          EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-        run: |
-          if [ "${{ github.event.inputs.year }}" == "all" ]; then
-            for year in 2022 2023 2024; do
-              echo "📥 Сбор данных за $year год..."
-              python collect_cache_data.py --year $year
-            done
-          else
-            echo "📥 Сбор данных за ${{ github.event.inputs.year }} год..."
-            python collect_cache_data.py --year ${{ github.event.inputs.year }}
-          fi
+      - name: Train RF
+        if: github.event.inputs.train_rf == 'true'
+        run: python scripts/train_full_rf.py
 
-      - name: Upload all cache files
+      - name: Upload models
         uses: actions/upload-artifact@v4
         with:
-          name: cache-data-all-years
+          name: full-models
           path: |
-            data/cache_*.json
-            data/cache_*.pkl
+            models/lstm_full_model.keras
+            models/lstm_full_scaler.pkl
+            models/rf_full_model.pkl
+            models/rf_full_scaler.pkl
 
-      - name: Commit and push to repo
+      - name: Commit and push models
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/cache_*.json data/cache_*.pkl || true
-          git diff --cached --quiet || git commit -m "Update cache data [skip ci]"
+          git add models/*.keras models/*.pkl || true
+          git diff --cached --quiet || git commit -m "Update full models [skip ci]"
           git push || echo "Push failed, but artifact is saved"
