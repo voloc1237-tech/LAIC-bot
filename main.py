@@ -532,7 +532,7 @@ def main():
                 # Получаем расширенный список признаков (как в обучении)
                 feature_names_extended = [
                     'magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
-                    'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean',
+                    'humidity_mean', '#tec_mean', 'kp_mean', '#dst_mean', '#f107_mean',
                     'magnitude_diff', 'depth_diff', 'temp_diff', 'humidity_diff',
                     'magnitude_rolling_mean', 'magnitude_rolling_std'
                 ]
