@@ -15,7 +15,51 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
 from fault_zones import FaultZoneAnalyzer
+from dotenv import load_dotenv
 
+load_dotenv()  # ← ЭТО ЗАГРУЖАЕТ ПЕРЕМЕННЫЕ ИЗ .env
+# ═══════════════════════════════════════════════════════════════
+# ЗАГРУЗКА СЛОВАРЯ РЕГИОНОВ
+# ═══════════════════════════════════════════════════════════════
+import pickle
+
+def load_region_data():
+    """Загружает словарь регионов с координатами."""
+    data_dir = Path(__file__).parent / "data"
+    pkl_path = data_dir / "region_mapping.pkl"
+
+    if pkl_path.exists():
+        try:
+            with open(pkl_path, 'rb') as f:
+                data = pickle.load(f)
+            logger.info(f"✅ Загружен словарь регионов: {len(data)} зон")
+            return data
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки region_mapping.pkl: {e}")
+            return {}
+    else:
+        logger.warning("⚠️ region_mapping.pkl не найден! Использую fallback.")
+        return {}
+
+REGION_DATA = load_region_data()
+
+def get_zone_info(lat, lon, threshold=0.5):
+    """
+    Находит зону по координатам.
+    Возвращает: (название_зоны, координаты) или (None, None)
+    """
+    if not REGION_DATA:
+        return None, None
+
+    lat = round(lat, 2)
+    lon = round(lon, 2)
+
+    for zone_id, info in REGION_DATA.items():
+        z_lat, z_lon = info["coords"]
+        if abs(z_lat - lat) <= threshold and abs(z_lon - lon) <= threshold:
+            return info["name"], info["coords"]
+
+    return None, None
 # ═══════════════════════════════════════════════════════════════
 # ЛОГИРОВАНИЕ
 # ═══════════════════════════════════════════════════════════════
@@ -38,7 +82,7 @@ logging.getLogger("numpy").setLevel(logging.ERROR)
 # ═══════════════════════════════════════════════════════════════
 def ensure_directories():
     directories = [
-        "data", "data/cache", "data/ionex_cache", 
+        "data", "data/cache", "data/ionex_cache",
         "data/models", "data/models/lstm", "config",
         "data/space_weather_cache"  # ← новое для OMNI
     ]
@@ -140,7 +184,7 @@ except ImportError:
 def main():
     logger.info("=" * 70)
     logger.info("🚀 LAIC EARTHQUAKE MONITOR")
-    
+
     current_time = datetime.now(timezone.utc)
     logger.info(f"⏰ Текущая дата: {current_time.isoformat()}")
     logger.info("=" * 70)
@@ -193,23 +237,23 @@ def main():
     logger.info("\n" + "=" * 70)
     logger.info("🔍 ЭТАП 1a: Фильтрация афтершоков")
     logger.info("=" * 70)
-    
+
     data_filtered = {}
     aftershock_counts = {}
-    
+
     for region_name, df in data.items():
         if not isinstance(df, pd.DataFrame) or df.empty:
             data_filtered[region_name] = df if isinstance(df, pd.DataFrame) else pd.DataFrame()
             aftershock_counts[region_name] = 0
             continue
-        
+
         df_filtered, df_aftershocks = filter_aftershocks(
             df, time_window_days=7, distance_km=50, mag_threshold=0.5
         )
         data_filtered[region_name] = df_filtered
         aftershock_counts[region_name] = len(df_aftershocks)
         logger.info(f"   📌 {region_name}: афтершоков {len(df_aftershocks)} из {len(df)}")
-    
+
     data = data_filtered
     total_filtered = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
     logger.info(f"\n📊 После фильтрации: {total_filtered} событий")
@@ -237,21 +281,21 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("🛰️ ЭТАП 1b: Сбор спутниковых данных (GEE)")
         logger.info("=" * 70)
-    
+
         for region_name, region_data in data.items():
             if region_data.empty:
                 continue
-                
+
             last_event = region_data.iloc[0]
             lat = last_event['latitude']
             lon = last_event['longitude']
-            
+
             end_date = effective_time.strftime('%Y-%m-%d')
             start_date = (effective_time - timedelta(days=7)).strftime('%Y-%m-%d')
 
             try:
                 gee_result = get_all_gee_data(lat, lon, start_date, end_date)
-                
+
                 # Логируем что получили
                 for key in ['lst', 'so2', 'co', 'ch4']:
                     val = gee_result.get(key, {})
@@ -259,9 +303,9 @@ def main():
                         logger.info(f"✅ {region_name}: {key.upper()} получен")
                     else:
                         logger.warning(f"⚠️ {region_name}: {key.upper()} недоступен")
-                
+
                 lst_cache[region_name] = gee_result
-    
+
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка GEE для {region_name}: {e}")
                 lst_cache[region_name] = None
@@ -311,10 +355,10 @@ def main():
             lon = row['longitude']
             event_time = row['time']
             mag = row['magnitude']
-            
+
             if row.get('is_aftershock', False):
                 continue
-            
+
             logger.info(f"🔍 Событие {event_id} M{mag:.1f} ({event_time.date()})")
 
             # Погода
@@ -330,16 +374,16 @@ def main():
             if iono:
                 try:
                     iono_result = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
-                    
+
                     clim_years = iono_result.get('n_historical_years', 0)
                     if clim_years > 0:
                         logger.info(f"   📊 Климатология: {clim_years} лет")
-                    
+
                     if iono_result.get('is_anomaly', False):
                         level = iono_result.get('level', 'unknown')
                         z_max = iono_result.get('z_score_max', 0)
                         z_min = iono_result.get('z_score_min', 0)
-                        
+
                         if level == 'critical':
                             logger.critical(f"   🔴🔴🔴 КРИТИЧЕСКАЯ АНОМАЛИЯ: max={z_max:.2f}σ, min={z_min:.2f}σ")
                         elif level == 'high':
@@ -348,9 +392,9 @@ def main():
                             logger.info(f"   🟡 Умеренная аномалия")
                     else:
                         logger.info(f"   ✅ Ионосфера в норме")
-                    
+
                     event_iono[event_id] = iono_result
-                    
+
                 except Exception as e:
                     logger.debug(f"   Ионосфера: {e}")
 
@@ -374,7 +418,7 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("🧠 ЭТАП 1d: ИИ-анализ аномалий")
         logger.info("=" * 70)
-        
+
         events_for_ai = []
         for region_name, df in data.items():
             if df.empty:
@@ -382,7 +426,7 @@ def main():
             for _, row in df.iterrows():
                 event_id = row.get('id', f'event_{row.name}')
                 iono_info = event_iono.get(event_id, {})
-                
+
                 events_for_ai.append({
                     'id': event_id,
                     'region': region_name,
@@ -396,21 +440,21 @@ def main():
                     'historical_years': iono_info.get('n_historical_years', 0),
                     'yoy_change': iono_info.get('year_over_year_change', 0.0)
                 })
-        
+
         if len(events_for_ai) >= 10:
             # ИСПРАВЛЕНО: contamination не фиксирован, адаптивный
             n_strong = sum(1 for e in events_for_ai if e['magnitude'] >= 6.0)
             contamination = min(0.2, max(0.05, n_strong / len(events_for_ai)))
-            
+
             detector = AnomalyDetector(contamination=contamination)
             anomaly_df = detector.analyze_events(events_for_ai)
-            
+
             if not anomaly_df.empty:
                 anomaly_counts = anomaly_df.groupby('region')['is_anomaly'].sum().to_dict()
                 for region, count in anomaly_counts.items():
                     if count > 0:
                         logger.info(f"   🔴 {region}: {count} аномалий")
-                
+
                 if TG_AVAILABLE and chat_id:
                     for region_name in anomaly_df['region'].unique():
                         region_anomalies = anomaly_df[anomaly_df['region'] == region_name]
@@ -418,7 +462,7 @@ def main():
                             try:
                                 img_bytes = create_anomaly_plot(region_anomalies, region_name)
                                 if img_bytes:
-                                    send_photo(chat_id, img_bytes, 
+                                    send_photo(chat_id, img_bytes,
                                               caption=f"🧠 ИИ-анализ — {region_name}")
                             except Exception as e:
                                 logger.error(f"❌ Ошибка отправки графика: {e}")
@@ -438,45 +482,45 @@ def main():
     if LSTM_AVAILABLE and not all_events.empty:
         model_path = "models/lstm_model.keras"
         scaler_path = "models/lstm_scaler.pkl"
-    
+
         if not os.path.exists(model_path) or not os.path.exists(scaler_path):
             logger.warning("⚠️ LSTM модель не найдена. Запустите train_lstm_model.py")
         else:
             try:
                 # Отключаем GPU предупреждения
                 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-            
+
                 model = load_model(model_path)
                 with open(scaler_path, 'rb') as f:
                     scaler = pickle.load(f)
                 logger.info("✅ LSTM модель загружена")
-            
+
                 # ===== ДИАГНОСТИКА СКЕЙЛЕРА =====
                 logger.info(f"📊 Скейлер: min={scaler.min_}, scale={scaler.scale_}")
                 # ================================
-            
+
                 # ===== СОБИРАЕМ ПРИЗНАКИ =====
                 feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
                                'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
-            
+
                 # Создаём DataFrame с признаками
                 df_features = all_events[['id', 'magnitude', 'depth_km', 'time']].copy()
-            
+
                 # Инициализируем колонки нулями
                 for col in feature_names:
                     if col not in df_features.columns:
                         df_features[col] = 0.0
-            
+
                 for idx, row in df_features.iterrows():
                     event_id = row['id']
-                
+
                     # LST
                     lst_data = lst_cache.get('global', {})
                     if lst_data and isinstance(lst_data, dict):
                         df_features.at[idx, 'lst_celsius'] = lst_data.get('lst_celsius', 0)
                     else:
                         df_features.at[idx, 'lst_celsius'] = 0
-                
+
                     # Погода
                     weather_data = event_weather.get(event_id)
                     if weather_data is not None and hasattr(weather_data, 'empty') and not weather_data.empty:
@@ -485,7 +529,7 @@ def main():
                     else:
                         df_features.at[idx, 'temp_mean'] = 0
                         df_features.at[idx, 'humidity_mean'] = 0
-                
+
                     # TEC (ионосфера)
                     iono_data = event_iono.get(event_id, {})
                     if iono_data and isinstance(iono_data, dict):
@@ -496,7 +540,7 @@ def main():
                             df_features.at[idx, 'tec_mean'] = 0
                     else:
                         df_features.at[idx, 'tec_mean'] = 0
-                
+
                     # Космическая погода
                     space_data = event_space.get(event_id, {})
                     if space_data and isinstance(space_data, dict):
@@ -510,36 +554,36 @@ def main():
                         df_features.at[idx, 'kp_mean'] = 0
                         df_features.at[idx, 'dst_mean'] = 0
                         df_features.at[idx, 'f107_mean'] = 0
-            
+
                 # Удаляем строки с пропусками
                 df_features = df_features.dropna(subset=feature_names)
-            
+
                 if len(df_features) >= 7:
                     last_events = df_features.tail(7)
-                
+
                     # ===== ДИАГНОСТИКА ВХОДНЫХ ДАННЫХ =====
                     logger.info(f"📊 Входные данные для LSTM:")
                     logger.info(f"   Последняя магнитуда: {last_events['magnitude'].values}")
                     logger.info(f"   Средний Kp: {last_events['kp_mean'].values}")
                     logger.info(f"   Средний TEC: {last_events['tec_mean'].values}")
                     # ======================================
-                
+
                     X = last_events[feature_names].values
                     X = X.reshape(1, 7, len(feature_names))
                     X_scaled = scaler.transform(X.reshape(-1, len(feature_names))).reshape(X.shape)
-                
+
                     prob = model.predict(X_scaled, verbose=0)[0][0]
-                
+
                     # Ограничиваем вероятность (чтобы не было 100%)
                     if prob > 0.95:
                         prob = 0.85
                         logger.warning("⚠️ Вероятность >95% ограничена до 85%")
-                
+
                     pred_mag = last_events['magnitude'].max() * (0.5 + prob * 0.5)
-                
+
                     logger.info(f"🔮 LSTM Прогноз: вероятность M≥6.0 = {prob*100:.1f}%")
                     logger.info(f"   Прогнозируемая магнитуда: {pred_mag:.2f}")
-                
+
                     # Отправка в Telegram
                     if TG_AVAILABLE and chat_id and prob > 0.2:
                         if prob > 0.5:
@@ -548,7 +592,7 @@ def main():
                             status = "🔶 Умеренный риск. Рекомендуется следить за обновлениями."
                         else:
                             status = "✅ Ситуация стабильна. Риск низкий."
-                    
+
                         forecast_msg = (
                             f"🧠 <b>LSTM ПРОГНОЗ</b>\n"
                             f"{'─' * 30}\n"
@@ -566,7 +610,7 @@ def main():
                             logger.error(f"❌ Ошибка отправки: {e}")
                 else:
                     logger.info(f"ℹ️ Недостаточно данных для LSTM прогноза (нужно ≥7, есть {len(df_features)})")
-                
+
             except Exception as e:
                 logger.error(f"❌ Ошибка LSTM: {e}")
                 # Если LSTM не сработал, пробуем гибридный прогноз (резерв)
@@ -630,15 +674,15 @@ def main():
             ]])
             features_scaled = rf_scaler.transform(features)
             region_id = rf_model.predict(features_scaled)[0]
-        
+
             # Загружаем словарь регионов
-            
+
             df_regions = pd.read_pickle("data/events_with_regions.pkl")
             region_mapping = df_regions[['region_id', 'region']].drop_duplicates().set_index('region_id').to_dict()['region']
             region_name = region_mapping.get(region_id, "Неизвестный регион")
-        
+
             logger.info(f"📍 Прогноз региона: {region_name} (ID: {region_id})")
-        
+
             # Отправляем в Telegram (если есть прогноз)
             if TG_AVAILABLE and chat_id:
                 region_msg = f"📍 Прогнозируемый регион: {region_name}"
@@ -651,200 +695,7 @@ def main():
                     logger.error(f"Ошибка отправки прогноза региона: {e}")
         except Exception as e:
             logger.error(f"Ошибка прогноза региона: {e}")
-    # ═══════════════════════════════════════════
-    # ЭТАП 1e: LSTM ПРОГНОЗИРОВАНИЕ (ИСПРАВЛЕННОЕ)
-    # ═══════════════════════════════════════════════════════════════
-    #if LSTM_AVAILABLE and not all_events.empty:
-        #logger.info("\n" + "=" * 70)
-        #logger.info("🔮 ЭТАП 1e: LSTM прогнозирование")
-        #logger.info("=" * 70)
-        
-        #lstm_predictor = EarthquakeLSTMPredictor(model_dir="data/models/lstm")
-        
-        # Подготовка ежедневных данных
-        #daily_df = lstm_predictor.prepare_data(all_events)
-        
-        #if len(daily_df) >= lstm_predictor.sequence_length + 50:
-            
-            # Обучение если нужно
-            #if not lstm_predictor.model:
-                #success = lstm_predictor.train(daily_df, epochs=50)
-                #if not success:
-                    #logger.warning("⚠️ LSTM обучение не удалось")
-            
-            # Прогноз
-            #if lstm_predictor.model:
-                #forecast = lstm_predictor.predict(daily_df, current_time=effective_time)
-                
-                # Форматирование
-                #windows_str = "\n".join(
-                    #f"  • {k}: {v*100:.1f}%" 
-                    #for k, v in forecast['windows'].items()
-                #)
-                
-                #if forecast.get('primary_forecast'):
-                    #pf = forecast['primary_forecast']
-                    #main_msg = (
-                        #f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
-                        #f"{'─' * 30}\n"
-                        #f"📅 Прогноз на: {forecast['forecast_time'][:10]}\n"
-                        #f"{'─' * 30}\n"
-                        #f"<b>Окно риска:</b> {pf['window']}\n"
-                        #f"<b>Вероятность M≥6.0:</b> {pf['probability']*100:.1f}%\n"
-                        #f"<b>Через:</b> {pf['days_to_event_min']}-{pf['days_to_event_max']} дней\n"
-                        #f"{'─' * 30}\n"
-                        #f"<b>Все окна:</b>\n{windows_str}\n"
-                    #)
-                    
-                    #if pf.get('is_significant'):
-                        #main_msg += "\n🔴 <b>ВЫСОКИЙ РИСК!</b>"
-                    #else:
-                        #main_msg += "\n🟠 Повышенное внимание"
-                #else:
-                    #main_msg = (
-                        #f"🔮 <b>LSTM ПРОГНОЗ</b>\n"
-                        #f"{'─' * 30}\n"
-                        #f"✅ Значимых паттернов не обнаружено\n"
-                        #f"{'─' * 30}\n"
-                        #f"{windows_str}"
-                    #)
-                
-                # Предупреждение о свежести
-                #if forecast.get('data_staleness_days', 0) > 2:
-                    #main_msg += f"\n\n⚠️ Данные отстают на {forecast['data_staleness_days']} дней"
-                
-                #logger.info(f"🔮 LSTM:\n{main_msg.replace('<b>', '').replace('</b>', '')}")
-                
-                # Отправка
-                #if TG_AVAILABLE and chat_id:
-                    #try:
-                        #url = f"https://api.telegram.org/bot{token}/sendMessage"
-                        #payload = {'chat_id': chat_id, 'text': main_msg, 'parse_mode': 'HTML'}
-                        #response = requests.post(url, data=payload, timeout=30)
-                        #if response.status_code == 200:
-                            #logger.info("✅ LSTM прогноз отправлен")
-                        #else:
-                            #logger.error(f"❌ Ошибка: {response.text}")
-                    #except Exception as e:
-                        #logger.error(f"❌ Ошибка отправки: {e}")
-            #else:
-                #logger.info("ℹ️ LSTM модель не загружена")
-        #else:
-            #logger.info(f"ℹ️ Недостаточно данных для LSTM ({len(daily_df)})")
-
-    # ═══════════════════════════════════════════════════════════════
-    # ЭТАП 1f: LAIC ПРОГНОЗИРОВАНИЕ (ГРАДИЕНТНЫЙ БУСТИНГ)
-    # ═══════════════════════════════════════════════════════════════
-    #if LAIC_PREDICTOR_AVAILABLE and len(all_events) >= 30:
-        #logger.info("\n" + "=" * 70)
-        #logger.info("🔮 ЭТАП 1f: LAIC прогнозирование (Gradient Boosting)")
-        #logger.info("=" * 70)
-        
-        #from earthquake_predictor import create_risk_report
-        
-        #predictor = LAICPredictor(model_dir="data/models")
-        
-        #iono_cache = {eid: d for eid, d in event_iono.items()}
-        #space_cache = {eid: d for eid, d in event_space.items()}
-        #weather_cache = {eid: d for eid, d in event_weather.items()}
-        
-        # Обучение/загрузка
-        #if not predictor.is_trained:
-            #logger.info("🧠 Обучение LAIC моделей...")
-            
-            #X, y = predictor.prepare_training_data(
-                #events_df=all_events,
-                #region_data_dict=data,
-                #lst_cache=lst_cache,
-                #iono_cache=iono_cache,
-                #space_cache=space_cache,
-                #weather_cache=weather_cache
-            #)
-            
-            #success = predictor.train(X, y)
-            #if not success:
-                #logger.warning("⚠️ LAIC обучение не удалось")
-        
-        #if predictor.is_trained:
-            # Прогноз по сетке — ИСПРАВЛЕНО: используем predict_grid с horizon_days
-            #anomalous_regions = []
-            #for region_name, df in data.items():
-                #if not df.empty:
-                    #last = df.iloc[0]
-                    #anomalous_regions.append({
-                        #'name': region_name,
-                        #'lat': last['latitude'],
-                        #'lon': last['longitude']
-                    #})
-            
-            #all_predictions = []
-            
-            #for region in anomalous_regions:
-                #region_bounds = {
-                    #'lat_min': max(-80, region['lat'] - 8),
-                    #'lat_max': min(80, region['lat'] + 8),
-                    #'lon_min': region['lon'] - 10,
-                    #'lon_max': region['lon'] + 10
-                #}
-                
-                # ИСПРАВЛЕНО: правильный вызов predict_grid
-                #grid_pred = predictor.predict_grid(
-                    #region_bounds=region_bounds,
-                    #current_time=effective_time,
-                    #region_data_dict=data,
-                    #lst_cache=lst_cache,
-                    #iono_cache=iono_cache,
-                    #space_cache=space_cache,
-                    #resolution=2.0,
-                    #horizon_days=30
-                #)
-                
-                #if not grid_pred.empty:
-                    #all_predictions.append(grid_pred)
-                    
-                    # Логируем топ-3
-                    #for i, (_, row) in enumerate(grid_pred.head(3).iterrows(), 1):
-                        #emoji = "🔴" if row.get('is_alert') else "🟠"
-                        #days = row.get('days_to_event', 'N/A')
-                        #sign = "+" if isinstance(days, (int, float)) and days > 0 else ""
-                        #logger.info(
-                            #f"   {emoji} #{i}: "
-                            #f"{row['lat']}°, {row['lon']}° | "
-                            #f"M{row.get('predicted_magnitude', 0):.1f} | "
-                            #f"{row.get('probability_m6', 0)*100:.0f}% | "
-                            #f"{sign}{days:.0f}д"
-                        #)
-            
-            # Объединение и отправка
-            #if all_predictions:
-                #combined = pd.concat(all_predictions, ignore_index=True)
-                #combined = combined.sort_values('probability_m6', ascending=False)
-                #combined = combined.drop_duplicates(subset=['lat', 'lon'], keep='first')
-                
-                #report_text = create_risk_report(combined, top_n=5)
-                
-                #if TG_AVAILABLE:
-                    #try:
-                        #alert_sync(report_text)
-                        #logger.info("✅ LAIC прогноз отправлен")
-                    #except Exception as e:
-                        #logger.warning(f"⚠️ Ошибка отправки: {e}")
-                
-                # Сохранение
-                #combined.to_csv(f"data/predictions_{effective_time.strftime('%Y%m%d')}.csv", index=False)
-                #logger.info(f"💾 Прогноз сохранён: {len(combined)} зон")
-                
-                # Критические алерты
-                #high_risk = combined[combined['is_alert'] == True] if 'is_alert' in combined.columns else pd.DataFrame()
-                ##high_risk = combined[combined.get('is_alert', pd.Series([False]*len(combined)))] не включать!
-                #if not high_risk.empty:
-                    #logger.critical(f"🚨 {len(high_risk)} зон высокого риска!")
-            #else:
-                #logger.info("ℹ️ Значимых прогнозов нет")
-        #else:
-            #logger.warning("⚠️ LAIC модели не обучены")
-    #else:
-        #logger.info("ℹ️ LAIC прогнозирование пропущено")
+    
 
 
     # ═══════════════════════════════════════════════════════════════
@@ -857,7 +708,7 @@ def main():
     zone_analyzer = FaultZoneAnalyzer()
     zone_alerts = {}        # для отправки алертов
     zone_risks = {}         # <-- ИНИЦИАЛИЗИРУЕМ СЛОВАРЬ ДЛЯ ВИЗУАЛИЗАЦИИ
-    
+
     if zone_analyzer.gdf is not None:
         # Собираем аномальные события (например, из event_iono)
         anomaly_events = []
@@ -893,12 +744,12 @@ def main():
                 lon = zone_data['lon']
                 current_anomalies = zone_data['events']
                 risk = zone_analyzer.calculate_zone_risk(zone_id, lat, lon, current_anomalies)
-                
+
                 # Получаем название зоны из zone_analyzer (или используем zone_id)
                 zone_name = zone_analyzer.get_zone_name(zone_id)
                 if not zone_name:
                     zone_name = f"Зона {zone_id}"  # запасной вариант
-                
+
                 zone_reports.append({
                     'zone_id': zone_id,
                     'zone_name': zone_name,
@@ -955,8 +806,7 @@ def main():
             logger.info("ℹ️ Аномальных событий не найдено, анализ зон пропущен.")
     else:
         logger.info("ℹ️ Файл разломов не загружен, анализ зон отключён.")
-    
-    
+
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 2: LAIC-АНАЛИЗ
     # ═══════════════════════════════════════════════════════════════
@@ -968,7 +818,30 @@ def main():
         from laic_analyzer import LAICAnalyzer
         analyzer = LAICAnalyzer(settings)
         results = analyzer.analyze_all(data)
-        logger.info(f"✅ LAIC-анализ: {len(results)} регионов")
+
+        # ============================================================
+        # ОБОГАЩАЕМ РЕЗУЛЬТАТЫ НАЗВАНИЯМИ ЗОН ИЗ СЛОВАРЯ
+        # ============================================================
+        enriched_count = 0
+        for result in results:
+            if isinstance(result, dict):
+                # Пробуем взять координаты из разных полей
+                lat = result.get('latitude') or result.get('lat') or 0
+                lon = result.get('longitude') or result.get('lon') or 0
+
+                if lat and lon:
+                    zone_name, zone_coords = get_zone_info(lat, lon)
+                    if zone_name:
+                        result['zone_name'] = zone_name
+                        result['zone_coords'] = zone_coords
+                        enriched_count += 1
+                        logger.debug(f"   🗺️ {zone_name} ({lat:.2f}, {lon:.2f})")
+                    else:
+                        result['zone_name'] = f"Точка {lat:.2f}, {lon:.2f}"
+                        result['zone_coords'] = [lat, lon]
+
+        logger.info(f"✅ LAIC-анализ: {len(results)} регионов, обогащено {enriched_count} зон")
+
     except Exception as e:
         logger.error(f"❌ Ошибка LAIC-анализа: {e}")
         results = []
@@ -992,7 +865,7 @@ def main():
         except Exception as e:
             logger.error(f"❌ Ошибка отправки: {e}")
 
-   
+
     # ═══════════════════════════════════════════════════════════════
     # 4. ВИЗУАЛИЗАЦИЯ (PNG + HTML)
     # ═══════════════════════════════════════════════════════════════
@@ -1006,7 +879,7 @@ def main():
 
         space_data = None
         iono_data = None
-        
+
         for region_name, df in data.items():
             if not isinstance(df, pd.DataFrame) or df.empty:
                 continue
@@ -1080,7 +953,7 @@ def main():
                     logger.info(f"✅ HTML {region_name}")
             except Exception as e:
                 logger.error(f"❌ HTML {region_name}: {e}")
-    
+
     # ═══════════════════════════════════════════════════════════════
     # ИТОГ
     # ═══════════════════════════════════════════════════════════════
