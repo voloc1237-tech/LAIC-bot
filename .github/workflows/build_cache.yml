@@ -1,0 +1,72 @@
+name: Build Cache Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Год для сбора данных (2022, 2023, 2024 или all)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - 2022
+          - 2023
+          - 2024
+
+jobs:
+  build-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install earthengine-api google-auth
+
+      - name: Prepare Earth Engine key
+        env:
+          EARTH_ENGINE_KEY_BASE64: ${{ secrets.EARTH_ENGINE_KEY_BASE64 }}
+        run: |
+          echo "$EARTH_ENGINE_KEY_BASE64" | base64 -d > /tmp/ee-key.json
+          echo "✅ EE key ready"
+
+      - name: Run collection script
+        env:
+          EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
+          EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
+        run: |
+          if [ "${{ github.event.inputs.year }}" == "all" ]; then
+            for year in 2022 2023 2024; do
+              echo "📥 Сбор данных за $year год..."
+              python scripts/collect_cache_data.py --year $year
+            done
+          else
+            echo "📥 Сбор данных за ${{ github.event.inputs.year }} год..."
+            python scripts/collect_cache_data.py --year ${{ github.event.inputs.year }}
+          fi
+
+      - name: Upload all cache files
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-data-all-years
+          path: |
+            data/cache_*.json
+            data/cache_*.pkl
+
+      - name: Commit and push to repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/cache_*.json data/cache_*.pkl || true
+          git diff --cached --quiet || git commit -m "Update cache data [skip ci]"
+          git push || echo "Push failed, but artifact is saved"
