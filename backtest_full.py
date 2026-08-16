@@ -21,6 +21,7 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 def load_library():
     """Загружает историческую библиотеку."""
     data_dir = Path("data")
@@ -40,7 +41,9 @@ def load_library():
     merged = merged.drop_duplicates(subset=['id']).sort_values('time')
     return merged
 
+
 def prepare_sequences(df, sequence_length=7, prediction_window=7):
+    """Подготавливает данные для LSTM (последовательности)."""
     feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
                      'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
     X, y = [], []
@@ -55,6 +58,25 @@ def prepare_sequences(df, sequence_length=7, prediction_window=7):
         ]
         y.append(1 if not future.empty else 0)
     return np.array(X), np.array(y)
+
+
+def prepare_rf_data(df, prediction_window=7):
+    """Подготавливает данные для RF (без временных последовательностей)."""
+    feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
+                     'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
+    X, y = [], []
+    df_sorted = df.sort_values('time').reset_index(drop=True)
+    for i in range(len(df_sorted) - prediction_window):
+        X.append(df_sorted.iloc[i][feature_names].values)
+        event_time = df_sorted.iloc[i]['time']
+        future = df_sorted[
+            (df_sorted['time'] > event_time) &
+            (df_sorted['time'] <= event_time + timedelta(days=prediction_window)) &
+            (df_sorted['magnitude'] >= 6.0)
+        ]
+        y.append(1 if not future.empty else 0)
+    return np.array(X), np.array(y)
+
 
 def main():
     logger.info("=" * 60)
@@ -90,7 +112,7 @@ def main():
         X_train_scaled = scaler.fit_transform(X_train_flat).reshape(X_train.shape)
         X_test_scaled = scaler.transform(X_test.reshape(-1, n_features)).reshape(X_test.shape)
         
-        # Строим модель (не загружаем сохранённую, чтобы избежать утечки)
+        # Строим модель
         model = Sequential([
             LSTM(32, activation='relu', input_shape=(n_steps, n_features)),
             Dropout(0.3),
@@ -115,7 +137,7 @@ def main():
         except:
             pass
     else:
-        logger.warning("⚠️ Недостаточно данных")
+        logger.warning("⚠️ Недостаточно данных для LSTM")
     
     # ===== RF =====
     logger.info("\n" + "=" * 60)
@@ -147,6 +169,8 @@ def main():
             logger.info(f"  ROC-AUC:   {auc:.3f}")
         except:
             pass
+    else:
+        logger.warning("⚠️ Недостаточно данных для RF")
 
 if __name__ == "__main__":
     main()
