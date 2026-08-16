@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-backtest_full.py — ЧЕСТНЫЙ бэктест (без утечки данных)
+backtest_full.py — ЧЕСТНЫЙ бэктест с ИСПОЛЬЗОВАНИЕМ СОХРАНЁННЫХ МОДЕЛЕЙ
+Проверяет модели, которые вы обучили на полных данных (2022-2024)
 """
 
 import os
@@ -13,10 +14,8 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.models import load_model
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -61,7 +60,7 @@ def prepare_sequences(df, sequence_length=7, prediction_window=7):
 
 
 def prepare_rf_data(df, prediction_window=7):
-    """Подготавливает данные для RF (без временных последовательностей)."""
+    """Подготавливает данные для RF."""
     feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
                      'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
     X, y = [], []
@@ -80,14 +79,15 @@ def prepare_rf_data(df, prediction_window=7):
 
 def main():
     logger.info("=" * 60)
-    logger.info("🔬 ЧЕСТНЫЙ БЭКТЕСТ (БЕЗ УТЕЧКИ ДАННЫХ)")
+    logger.info("🔬 БЭКТЕСТ С ИСПОЛЬЗОВАНИЕМ СОХРАНЁННЫХ МОДЕЛЕЙ")
     logger.info("=" * 60)
     
+    # 1. Загружаем библиотеку
     df_all = load_library()
     if df_all is None:
         return
     
-    # Разделяем по годам
+    # 2. Разделяем по годам
     train_df = df_all[df_all['time'].dt.year == 2022]
     val_df = df_all[df_all['time'].dt.year == 2023]
     test_df = df_all[df_all['time'].dt.year == 2024]
@@ -96,81 +96,92 @@ def main():
     logger.info(f"📊 Валидация: {len(val_df)} событий (2023)")
     logger.info(f"📊 Тест: {len(test_df)} событий (2024)")
     
-    # ===== LSTM =====
-    logger.info("\n" + "=" * 60)
-    logger.info("🧠 LSTM (обучение на 2022, тест на 2024)")
-    logger.info("=" * 60)
+    # ===== ЗАГРУЗКА МОДЕЛЕЙ =====
+    models_dir = Path("models")
     
-    X_train, y_train = prepare_sequences(train_df)
-    X_test, y_test = prepare_sequences(test_df)
+    # LSTM
+    lstm_model = None
+    lstm_scaler = None
+    try:
+        lstm_model = load_model(models_dir / "lstm_full_model.keras")
+        with open(models_dir / "lstm_full_scaler.pkl", 'rb') as f:
+            lstm_scaler = pickle.load(f)
+        logger.info("✅ LSTM модель загружена")
+    except Exception as e:
+        logger.warning(f"⚠️ LSTM не загружена: {e}")
     
-    if len(X_train) > 0 and len(X_test) > 0:
-        # Масштабируем
-        n_samples, n_steps, n_features = X_train.shape
-        scaler = StandardScaler()
-        X_train_flat = X_train.reshape(-1, n_features)
-        X_train_scaled = scaler.fit_transform(X_train_flat).reshape(X_train.shape)
-        X_test_scaled = scaler.transform(X_test.reshape(-1, n_features)).reshape(X_test.shape)
+    # RF
+    rf_model = None
+    rf_scaler = None
+    try:
+        with open(models_dir / "rf_full_model.pkl", 'rb') as f:
+            rf_model = pickle.load(f)
+        with open(models_dir / "rf_full_scaler.pkl", 'rb') as f:
+            rf_scaler = pickle.load(f)
+        logger.info("✅ RF модель загружена")
+    except Exception as e:
+        logger.warning(f"⚠️ RF не загружена: {e}")
+    
+    # ===== LSTM БЭКТЕСТ =====
+    if lstm_model is not None:
+        logger.info("\n" + "=" * 60)
+        logger.info("🧠 LSTM БЭКТЕСТ НА 2024 ГОДУ")
+        logger.info("=" * 60)
         
-        # Строим модель
-        model = Sequential([
-            LSTM(32, activation='relu', input_shape=(n_steps, n_features)),
-            Dropout(0.3),
-            Dense(1, activation='sigmoid')
-        ])
-        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        X_test, y_test = prepare_sequences(test_df, sequence_length=7, prediction_window=7)
         
-        logger.info("⚡ Обучение LSTM на 2022 году...")
-        model.fit(X_train_scaled, y_train, epochs=20, batch_size=16, verbose=0)
-        
-        y_pred_prob = model.predict(X_test_scaled).flatten()
-        y_pred = (y_pred_prob >= 0.5).astype(int)
-        
-        logger.info("📊 РЕЗУЛЬТАТЫ LSTM НА 2024 ГОДУ:")
-        logger.info(f"  Accuracy:  {accuracy_score(y_test, y_pred):.3f}")
-        logger.info(f"  Precision: {precision_score(y_test, y_pred, zero_division=0):.3f}")
-        logger.info(f"  Recall:    {recall_score(y_test, y_pred, zero_division=0):.3f}")
-        logger.info(f"  F1-score:  {f1_score(y_test, y_pred, zero_division=0):.3f}")
-        try:
-            auc = roc_auc_score(y_test, y_pred_prob)
-            logger.info(f"  ROC-AUC:   {auc:.3f}")
-        except:
-            pass
+        if len(X_test) > 0:
+            n_samples, n_steps, n_features = X_test.shape
+            X_test_flat = X_test.reshape(-1, n_features)
+            X_test_scaled = lstm_scaler.transform(X_test_flat).reshape(X_test.shape)
+            
+            y_pred_prob = lstm_model.predict(X_test_scaled).flatten()
+            y_pred = (y_pred_prob >= 0.5).astype(int)
+            
+            logger.info("📊 РЕЗУЛЬТАТЫ LSTM НА 2024 ГОДУ:")
+            logger.info(f"  Accuracy:  {accuracy_score(y_test, y_pred):.3f}")
+            logger.info(f"  Precision: {precision_score(y_test, y_pred, zero_division=0):.3f}")
+            logger.info(f"  Recall:    {recall_score(y_test, y_pred, zero_division=0):.3f}")
+            logger.info(f"  F1-score:  {f1_score(y_test, y_pred, zero_division=0):.3f}")
+            try:
+                auc = roc_auc_score(y_test, y_pred_prob)
+                logger.info(f"  ROC-AUC:   {auc:.3f}")
+            except:
+                pass
+        else:
+            logger.warning("⚠️ Недостаточно данных для LSTM")
     else:
-        logger.warning("⚠️ Недостаточно данных для LSTM")
+        logger.warning("⚠️ LSTM модель не загружена, бэктест пропущен")
     
-    # ===== RF =====
-    logger.info("\n" + "=" * 60)
-    logger.info("🌲 RF (обучение на 2022, тест на 2024)")
-    logger.info("=" * 60)
-    
-    X_train_rf, y_train_rf = prepare_rf_data(train_df)
-    X_test_rf, y_test_rf = prepare_rf_data(test_df)
-    
-    if len(X_train_rf) > 0 and len(X_test_rf) > 0:
-        scaler_rf = StandardScaler()
-        X_train_rf_scaled = scaler_rf.fit_transform(X_train_rf)
-        X_test_rf_scaled = scaler_rf.transform(X_test_rf)
+    # ===== RF БЭКТЕСТ =====
+    if rf_model is not None:
+        logger.info("\n" + "=" * 60)
+        logger.info("🌲 RF БЭКТЕСТ НА 2024 ГОДУ")
+        logger.info("=" * 60)
         
-        rf = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
-        logger.info("⚡ Обучение RF на 2022 году...")
-        rf.fit(X_train_rf_scaled, y_train_rf)
+        X_test_rf, y_test_rf = prepare_rf_data(test_df, prediction_window=7)
         
-        y_pred_rf = rf.predict(X_test_rf_scaled)
-        y_pred_prob_rf = rf.predict_proba(X_test_rf_scaled)[:, 1]
-        
-        logger.info("📊 РЕЗУЛЬТАТЫ RF НА 2024 ГОДУ:")
-        logger.info(f"  Accuracy:  {accuracy_score(y_test_rf, y_pred_rf):.3f}")
-        logger.info(f"  Precision: {precision_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
-        logger.info(f"  Recall:    {recall_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
-        logger.info(f"  F1-score:  {f1_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
-        try:
-            auc = roc_auc_score(y_test_rf, y_pred_prob_rf)
-            logger.info(f"  ROC-AUC:   {auc:.3f}")
-        except:
-            pass
+        if len(X_test_rf) > 0:
+            X_test_rf_scaled = rf_scaler.transform(X_test_rf)
+            
+            y_pred_rf = rf_model.predict(X_test_rf_scaled)
+            y_pred_prob_rf = rf_model.predict_proba(X_test_rf_scaled)[:, 1]
+            
+            logger.info("📊 РЕЗУЛЬТАТЫ RF НА 2024 ГОДУ:")
+            logger.info(f"  Accuracy:  {accuracy_score(y_test_rf, y_pred_rf):.3f}")
+            logger.info(f"  Precision: {precision_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
+            logger.info(f"  Recall:    {recall_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
+            logger.info(f"  F1-score:  {f1_score(y_test_rf, y_pred_rf, zero_division=0):.3f}")
+            try:
+                auc = roc_auc_score(y_test_rf, y_pred_prob_rf)
+                logger.info(f"  ROC-AUC:   {auc:.3f}")
+            except:
+                pass
+        else:
+            logger.warning("⚠️ Недостаточно данных для RF")
     else:
-        logger.warning("⚠️ Недостаточно данных для RF")
+        logger.warning("⚠️ RF модель не загружена, бэктест пропущен")
+
 
 if __name__ == "__main__":
     main()
