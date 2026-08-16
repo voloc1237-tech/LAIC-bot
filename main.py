@@ -36,9 +36,9 @@ logging.getLogger("numpy").setLevel(logging.ERROR)
 # ═══════════════════════════════════════════════════════════════
 from aftershock_filter import filter_aftershocks
 from fault_zones import FaultZoneAnalyzer
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
-load_dotenv()  # ← ЭТО ЗАГРУЖАЕТ ПЕРЕМЕННЫЕ ИЗ .env
+#load_dotenv()  # ← ЭТО ЗАГРУЖАЕТ ПЕРЕМЕННЫЕ ИЗ .env
 
 # ═══════════════════════════════════════════════════════════════
 # ЗАГРУЗКА СЛОВАРЯ РЕГИОНОВ
