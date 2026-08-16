@@ -1,12 +1,23 @@
-name: Build Cache 2024
+name: Build Cache Data
 
 on:
-  workflow_dispatch:   # запуск вручную из интерфейса GitHub
+  workflow_dispatch:   # запуск вручную
+    inputs:
+      year:
+        description: 'Год для сбора данных (2022, 2023, 2024 или all)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - 2022
+          - 2023
+          - 2024
 
 jobs:
   build-cache:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 часов (максимум для бесплатных)
+    timeout-minutes: 360   # 6 часов
 
     steps:
       - uses: actions/checkout@v4
@@ -32,28 +43,30 @@ jobs:
         env:
           EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
-          # Если нужны другие переменные, добавьте их сюда
         run: |
-          python collect_cache_data.py
+          if [ "${{ github.event.inputs.year }}" == "all" ]; then
+            for year in 2022 2023 2024; do
+              echo "📥 Сбор данных за $year год..."
+              python collect_cache_data.py --year $year
+            done
+          else
+            echo "📥 Сбор данных за ${{ github.event.inputs.year }} год..."
+            python collect_cache_data.py --year ${{ github.event.inputs.year }}
+          fi
 
-      - name: Upload cache as artifact
+      - name: Upload all cache files
         uses: actions/upload-artifact@v4
         with:
-          name: cache-data
-          path: data/cache_*.json  # ← захватит все JSON-файлы
-     # - name: Upload cache as artifact
-       # uses: actions/upload-artifact@v4
-       # with:
-          #name: cache-2024
-          #path: |
-           # data/cache_2024.json
-           # data/cache_2024.pkl
+          name: cache-data-all-years
+          path: |
+            data/cache_*.json
+            data/cache_*.pkl
 
-      - name: Commit and push to repo (опционально)
-        if: always()  # даже если были ошибки, попробуем закоммитить то, что есть
+      - name: Commit and push to repo
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/cache_2024.* || true
-          git diff --cached --quiet || git commit -m "Update cache 2024 [skip ci]"
+          git add data/cache_*.json data/cache_*.pkl || true
+          git diff --cached --quiet || git commit -m "Update cache data [skip ci]"
           git push || echo "Push failed, but artifact is saved"
