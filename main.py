@@ -15,9 +15,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from aftershock_filter import filter_aftershocks
 from fault_zones import FaultZoneAnalyzer
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
-load_dotenv()  # ← ЭТО ЗАГРУЖАЕТ ПЕРЕМЕННЫЕ ИЗ .env
+#load_dotenv()  # ← ЭТО ЗАГРУЖАЕТ ПЕРЕМЕННЫЕ ИЗ .env
 # ═══════════════════════════════════════════════════════════════
 # ЗАГРУЗКА СЛОВАРЯ РЕГИОНОВ
 # ═══════════════════════════════════════════════════════════════
