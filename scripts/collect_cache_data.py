@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — быстрый сбор данных за период (2022).
+collect_cache_data.py — быстрый сбор данных за указанный год
+Запуск: python scripts/collect_cache_data.py --year 2022
 """
 
 import os
@@ -10,8 +11,12 @@ import json
 import pickle
 import logging
 import time
+import argparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Добавляем корневую папку в путь
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
 import numpy as np
@@ -29,11 +34,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger('CacheCollector')
 
-# ===== НАСТРОЙКА ПЕРИОДА (2022) =====
-START_DATE = datetime(2022, 8, 1, tzinfo=timezone.utc)
-END_DATE = datetime(2022, 12, 31, tzinfo=timezone.utc)
-MIN_MAGNITUDE = 5.0
-# =====================================
+# ===== ПАРСИНГ АРГУМЕНТОВ =====
+parser = argparse.ArgumentParser()
+parser.add_argument('--year', type=int, help='Год для сбора данных (2022, 2023, 2024)')
+args = parser.parse_args()
+
+if args.year:
+    START_DATE = datetime(args.year, 1, 1, tzinfo=timezone.utc)
+    END_DATE = datetime(args.year, 12, 31, tzinfo=timezone.utc)
+    MIN_MAGNITUDE = 4.5
+    logger.info(f"📅 Сбор данных за {args.year} год")
+else:
+    # Значения по умолчанию
+    START_DATE = datetime(2022, 8, 1, tzinfo=timezone.utc)
+    END_DATE = datetime(2022, 12, 31, tzinfo=timezone.utc)
+    MIN_MAGNITUDE = 5.0
+    logger.info("📅 Сбор данных за период по умолчанию (август-декабрь 2022)")
 
 
 # ----- Климатологические модели -----
@@ -59,7 +75,7 @@ def get_climatology_tec(lat, lon, event_time):
     return max(tec, 3)
 
 
-# ----- Загрузка глобальных индексов (исправлено) -----
+# ----- Загрузка глобальных индексов -----
 
 def load_kp_for_period(start_date, end_date):
     """Загружает Kp из GFZ и фильтрует по датам."""
@@ -294,15 +310,15 @@ def collect_and_save():
 
     logger.info(f"✅ Собрано {len(all_data)} событий (пропущено {skipped})")
 
-    output_dir = Path("data")
+    output_dir = Path(__file__).parent.parent / "data"
     output_dir.mkdir(exist_ok=True)
 
-    json_path = output_dir / f"cache_{start_date.strftime('%Y%m')}_{end_date.strftime('%Y%m')}.json"
+    json_path = output_dir / f"cache_{start_date.year}01_{start_date.year}12.json"
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
-    logger.info(f"✅ Сохранено в {json_path}")
+    logger.info(f"✅ Сохранено {len(all_data)} записей в {json_path}")
 
-    pkl_path = output_dir / f"cache_{start_date.strftime('%Y%m')}_{end_date.strftime('%Y%m')}.pkl"
+    pkl_path = output_dir / f"cache_{start_date.year}01_{start_date.year}12.pkl"
     with open(pkl_path, 'wb') as f:
         pickle.dump(all_data, f)
     logger.info(f"✅ Сохранено в {pkl_path}")
