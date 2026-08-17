@@ -33,7 +33,6 @@ from viresclient import SwarmRequest, set_token
 print('🔍 Тест Swarm...')
 print(f'Токен: {os.environ.get("VIRES_ACCESS_TOKEN", "НЕ НАЙДЕН")[:10]}...')
 
-# Устанавливаем токен
 token = os.environ.get('VIRES_ACCESS_TOKEN')
 if not token:
     print('❌ Токен не найден в окружении')
@@ -42,7 +41,6 @@ if not token:
 set_token(token, 'https://vires.services/ows')
 print('✅ Токен установлен')
 
-# Создаём запрос
 request = SwarmRequest()
 request.set_collection('SW_OPER_MAGA_LR_1B')
 request.set_products(
@@ -52,7 +50,6 @@ request.set_products(
     sampling_step='PT10S'
 )
 
-# Запрос за последние 3 дня
 end = datetime.now(timezone.utc)
 start = end - timedelta(days=3)
 
