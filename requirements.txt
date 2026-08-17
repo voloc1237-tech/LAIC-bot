@@ -16,6 +16,7 @@ matplotlib
 folium
 plotly
 pandas
+viresclient>=0.11.0
 htmlmin
 requests
 pyyaml
