@@ -18,45 +18,50 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas numpy
-          pip install viresclient
+          pip install pandas numpy viresclient
 
       - name: Test Swarm connection
         env:
           VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
         run: |
-          python -c '
-import os
-from datetime import datetime, timedelta, timezone
-from viresclient import SwarmRequest, set_token
+          python - <<'EOF'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from viresclient import SwarmRequest
 
-print("🔍 Тест Swarm...")
-print(f"Токен: {os.environ.get("VIRES_ACCESS_TOKEN", "НЕ НАЙДЕН")[:10]}...")
+          print("🔍 Тест Swarm...")
+          
+          token = os.environ.get("VIRES_ACCESS_TOKEN")
+          # Безопасный вывод токена без сложных f-strings и проблем с кавычками
+          token_display = token[:10] + "..." if token else "НЕ НАЙДЕН"
+          print(f"Токен: {token_display}")
 
-token = os.environ.get("VIRES_ACCESS_TOKEN")
-if not token:
-    print("❌ Токен не найден в окружении")
-    exit(1)
+          if not token:
+              print("❌ Токен не найден в окружении")
+              exit(1)
 
-set_token(token, "https://vires.services/ows")
-print("✅ Токен установлен")
+          # ИСПРАВЛЕНИЕ: Передаем url и токен напрямую в конструктор (безопасно для CI/CD)
+          request = SwarmRequest(
+              url="https://vires.services/ows",
+              token=token
+          )
+          print("✅ Подключение и токен установлены")
 
-request = SwarmRequest()
-request.set_collection("SW_OPER_MAGA_LR_1B")
-request.set_products(
-    measurements=["F"],
-    models=["CHAOS-Core"],
-    auxiliaries=["QDLat", "QDLon"],
-    sampling_step="PT10S"
-)
+          request.set_collection("SW_OPER_MAGA_LR_1B")
+          request.set_products(
+              measurements=["F"],
+              models=["CHAOS-Core"],
+              auxiliaries=["QDLat", "QDLon"],
+              sampling_step="PT10S"
+          )
 
-end = datetime.now(timezone.utc)
-start = end - timedelta(days=3)
+          end = datetime.now(timezone.utc)
+          start = end - timedelta(days=3)
 
-print(f"📅 Запрос: {start.date()} — {end.date()}")
-data = request.get_between(start, end)
-df = data.as_dataframe()
+          print(f"📅 Запрос: {start.date()} — {end.date()}")
+          data = request.get_between(start, end)
+          df = data.as_dataframe()
 
-print(f"✅ Получено {len(df)} записей")
-print("✅ Тест пройден!")
-'
+          print(f"✅ Получено {len(df)} записей")
+          print("✅ Тест пройден!")
+          EOF
