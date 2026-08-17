@@ -60,6 +60,7 @@ jobs:
           NASA_USERNAME: ${{ secrets.NASA_USERNAME }}
           NASA_PASSWORD: ${{ secrets.NASA_PASSWORD }}
           WEATHERAPI_KEY: ${{ secrets.WEATHERAPI_KEY }}
+          VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}  
           # 👇 КРИТИЧЕСКИ ВАЖНО: Включаем тестовый режим для скачивания реальных файлов IONEX
           TEST_MODE: "true"
           
