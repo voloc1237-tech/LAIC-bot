@@ -1,55 +1,36 @@
-name: Test Swarm Integration
-
-on:
-  workflow_dispatch:
-
-jobs:
-  test-swarm:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install pandas numpy viresclient
-
-      - name: Test Swarm connection
+- name: Test Swarm connection
         env:
           VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
         run: |
           python - <<'EOF'
           import os
           from datetime import datetime, timedelta, timezone
-          from viresclient import SwarmRequest, set_token
+          from viresclient import SwarmRequest
 
           print("🔍 Тест Swarm...")
           
-          # 1. ВАЖНО: .strip() удаляет случайные пробелы и переносы строк из GitHub Secrets
           token = os.environ.get("VIRES_ACCESS_TOKEN", "").strip()
-          
           if not token:
               print("❌ Токен не найден или пуст в окружении")
               exit(1)
 
           print(f"✅ Токен получен. Длина: {len(token)} символов. Начало: {token[:10]}...")
 
-          # 2. Используем каноничный метод установки токена для viresclient
+          # 1. ПРЯМАЯ передача URL и токена в конструктор (гарантированно работает в CI, обходя ~/.viresclient.ini)
+          url = "https://vires.services/ows"
+          print(f"🔗 Инициализация запроса к {url}...")
+          request = SwarmRequest(url=url, token=token)
+
+          # 2. ШАГ ДИАГНОСТИКИ: Проверяем базовый доступ к списку коллекций
+          print("📡 Проверка базового доступа (available_collections)...")
           try:
-              set_token(url="https://vires.services/ows", token=token, set_default=True)
-              print("✅ Токен успешно зарегистрирован в конфигурации viresclient")
+              collections = request.available_collections()
+              print(f"✅ Базовый доступ подтвержден! Доступно коллекций: {len(collections)}")
           except Exception as e:
-              print(f"❌ Ошибка при регистрации токена: {e}")
+              print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Токен недействителен или отозван. Детали: {e}")
               exit(1)
 
-          # 3. Создаем запрос (он автоматически подхватит установленный токен и URL)
-          request = SwarmRequest()
+          # 3. Основной запрос данных
           request.set_collection("SW_OPER_MAGA_LR_1B")
           request.set_products(
               measurements=["F"],
@@ -61,14 +42,14 @@ jobs:
           end = datetime.now(timezone.utc)
           start = end - timedelta(days=3)
 
-          print(f"📅 Запрос: {start.date()} — {end.date()}")
-          
+          print(f"📅 Запрос данных: {start.date()} — {end.date()}")
           try:
               data = request.get_between(start, end)
               df = data.as_dataframe()
               print(f"✅ Получено {len(df)} записей")
               print("🎉 Тест успешно пройден!")
           except Exception as e:
-              print(f"❌ Ошибка при получении данных от VirES: {e}")
+              print(f"❌ Ошибка при получении данных: {e}")
+              print("💡 Возможные причины: у токена нет прав на 'SW_OPER_MAGA_LR_1B', или запрос превышает лимиты.")
               exit(1)
           EOF
