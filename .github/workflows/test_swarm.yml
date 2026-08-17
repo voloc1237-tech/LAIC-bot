@@ -1,41 +1,74 @@
-- name: Test Swarm connection
-  env:
-    VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
-  run: |
-    python -c '
-import os
-from datetime import datetime, timedelta, timezone
-from viresclient import SwarmRequest
+name: Test Swarm Integration
 
-token = os.environ.get("VIRES_ACCESS_TOKEN")
-print(f"🔍 Тест Swarm...")
-print(f"Токен: {token[:10]}..." if token else "❌ Токен не найден")
+on:
+  workflow_dispatch:
 
-if not token:
-    print("❌ Токен не найден в окружении")
-    exit(1)
+jobs:
+  test-swarm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
-# Явно передаём токен и URL при создании запроса
-request = SwarmRequest(
-    url="https://vires.services/ows",
-    token=token
-)
+    steps:
+      - uses: actions/checkout@v4
 
-request.set_collection("SW_OPER_MAGA_LR_1B")
-request.set_products(
-    measurements=["F"],
-    models=["CHAOS-Core"],
-    auxiliaries=["QDLat", "QDLon"],
-    sampling_step="PT10S"
-)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-end = datetime.now(timezone.utc)
-start = end - timedelta(days=3)
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy viresclient
 
-print(f"📅 Запрос: {start.date()} — {end.date()}")
-data = request.get_between(start, end)
-df = data.as_dataframe()
+      - name: Test Swarm connection
+        env:
+          VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from viresclient import SwarmRequest, set_token
 
-print(f"✅ Получено {len(df)} записей")
-print("✅ Тест пройден!")
-'
+          print("🔍 Тест Swarm...")
+          
+          # 1. ВАЖНО: .strip() удаляет случайные пробелы и переносы строк из GitHub Secrets
+          token = os.environ.get("VIRES_ACCESS_TOKEN", "").strip()
+          
+          if not token:
+              print("❌ Токен не найден или пуст в окружении")
+              exit(1)
+
+          print(f"✅ Токен получен. Длина: {len(token)} символов. Начало: {token[:10]}...")
+
+          # 2. Используем каноничный метод установки токена для viresclient
+          try:
+              set_token(url="https://vires.services/ows", token=token, set_default=True)
+              print("✅ Токен успешно зарегистрирован в конфигурации viresclient")
+          except Exception as e:
+              print(f"❌ Ошибка при регистрации токена: {e}")
+              exit(1)
+
+          # 3. Создаем запрос (он автоматически подхватит установленный токен и URL)
+          request = SwarmRequest()
+          request.set_collection("SW_OPER_MAGA_LR_1B")
+          request.set_products(
+              measurements=["F"],
+              models=["CHAOS-Core"],
+              auxiliaries=["QDLat", "QDLon"],
+              sampling_step="PT10S"
+          )
+
+          end = datetime.now(timezone.utc)
+          start = end - timedelta(days=3)
+
+          print(f"📅 Запрос: {start.date()} — {end.date()}")
+          
+          try:
+              data = request.get_between(start, end)
+              df = data.as_dataframe()
+              print(f"✅ Получено {len(df)} записей")
+              print("🎉 Тест успешно пройден!")
+          except Exception as e:
+              print(f"❌ Ошибка при получении данных от VirES: {e}")
+              exit(1)
+          EOF
