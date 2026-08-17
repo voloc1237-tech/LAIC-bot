@@ -1,67 +1,41 @@
-name: Test Swarm Integration
+- name: Test Swarm connection
+  env:
+    VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
+  run: |
+    python -c '
+import os
+from datetime import datetime, timedelta, timezone
+from viresclient import SwarmRequest
 
-on:
-  workflow_dispatch:
+token = os.environ.get("VIRES_ACCESS_TOKEN")
+print(f"🔍 Тест Swarm...")
+print(f"Токен: {token[:10]}..." if token else "❌ Токен не найден")
 
-jobs:
-  test-swarm:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+if not token:
+    print("❌ Токен не найден в окружении")
+    exit(1)
 
-    steps:
-      - uses: actions/checkout@v4
+# Явно передаём токен и URL при создании запроса
+request = SwarmRequest(
+    url="https://vires.services/ows",
+    token=token
+)
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+request.set_collection("SW_OPER_MAGA_LR_1B")
+request.set_products(
+    measurements=["F"],
+    models=["CHAOS-Core"],
+    auxiliaries=["QDLat", "QDLon"],
+    sampling_step="PT10S"
+)
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install pandas numpy viresclient
+end = datetime.now(timezone.utc)
+start = end - timedelta(days=3)
 
-      - name: Test Swarm connection
-        env:
-          VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
-        run: |
-          python - <<'EOF'
-          import os
-          from datetime import datetime, timedelta, timezone
-          from viresclient import SwarmRequest
+print(f"📅 Запрос: {start.date()} — {end.date()}")
+data = request.get_between(start, end)
+df = data.as_dataframe()
 
-          print("🔍 Тест Swarm...")
-          
-          token = os.environ.get("VIRES_ACCESS_TOKEN")
-          # Безопасный вывод токена без сложных f-strings и проблем с кавычками
-          token_display = token[:10] + "..." if token else "НЕ НАЙДЕН"
-          print(f"Токен: {token_display}")
-
-          if not token:
-              print("❌ Токен не найден в окружении")
-              exit(1)
-
-          # ИСПРАВЛЕНИЕ: Передаем url и токен напрямую в конструктор (безопасно для CI/CD)
-          request = SwarmRequest(
-              url="https://vires.services/ows",
-              token=token
-          )
-          print("✅ Подключение и токен установлены")
-
-          request.set_collection("SW_OPER_MAGA_LR_1B")
-          request.set_products(
-              measurements=["F"],
-              models=["CHAOS-Core"],
-              auxiliaries=["QDLat", "QDLon"],
-              sampling_step="PT10S"
-          )
-
-          end = datetime.now(timezone.utc)
-          start = end - timedelta(days=3)
-
-          print(f"📅 Запрос: {start.date()} — {end.date()}")
-          data = request.get_between(start, end)
-          df = data.as_dataframe()
-
-          print(f"✅ Получено {len(df)} записей")
-          print("✅ Тест пройден!")
-          EOF
+print(f"✅ Получено {len(df)} записей")
+print("✅ Тест пройден!")
+'
