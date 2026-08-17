@@ -1,7 +1,7 @@
 name: Test Swarm Integration
 
 on:
-  workflow_dispatch:   # запуск вручную
+  workflow_dispatch:
 
 jobs:
   test-swarm:
@@ -25,38 +25,38 @@ jobs:
         env:
           VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}
         run: |
-          python -c "
+          python -c '
 import os
 from datetime import datetime, timedelta, timezone
 from viresclient import SwarmRequest, set_token
 
-print('🔍 Тест Swarm...')
-print(f'Токен: {os.environ.get("VIRES_ACCESS_TOKEN", "НЕ НАЙДЕН")[:10]}...')
+print("🔍 Тест Swarm...")
+print(f"Токен: {os.environ.get("VIRES_ACCESS_TOKEN", "НЕ НАЙДЕН")[:10]}...")
 
-token = os.environ.get('VIRES_ACCESS_TOKEN')
+token = os.environ.get("VIRES_ACCESS_TOKEN")
 if not token:
-    print('❌ Токен не найден в окружении')
+    print("❌ Токен не найден в окружении")
     exit(1)
 
-set_token(token, 'https://vires.services/ows')
-print('✅ Токен установлен')
+set_token(token, "https://vires.services/ows")
+print("✅ Токен установлен")
 
 request = SwarmRequest()
-request.set_collection('SW_OPER_MAGA_LR_1B')
+request.set_collection("SW_OPER_MAGA_LR_1B")
 request.set_products(
-    measurements=['F'],
-    models=['CHAOS-Core'],
-    auxiliaries=['QDLat', 'QDLon'],
-    sampling_step='PT10S'
+    measurements=["F"],
+    models=["CHAOS-Core"],
+    auxiliaries=["QDLat", "QDLon"],
+    sampling_step="PT10S"
 )
 
 end = datetime.now(timezone.utc)
 start = end - timedelta(days=3)
 
-print(f'📅 Запрос: {start.date()} — {end.date()}')
+print(f"📅 Запрос: {start.date()} — {end.date()}")
 data = request.get_between(start, end)
 df = data.as_dataframe()
 
-print(f'✅ Получено {len(df)} записей')
-print('✅ Тест пройден!')
-"
+print(f"✅ Получено {len(df)} записей")
+print("✅ Тест пройден!")
+'
