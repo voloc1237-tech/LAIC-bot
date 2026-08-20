@@ -660,48 +660,7 @@ def main():
     else:
         logger.info("ℹ️ LSTM-прогнозирование пропущено")
     
-                # ════════════════════════════════════════════════════════════
-                # УПРОЩЁННЫЙ ПРОГНОЗ (резерв)
-                # ════════════════════════════════════════════════════════════
-                try:
-                    last_events = all_events.tail(7)
-                    if len(last_events) >= 5:
-                        mag_max = last_events['magnitude'].max()
-                        mag_mean = last_events['magnitude'].mean()
-                        
-                        # Простая вероятность
-                        prob = 0.3 + (mag_max - 5.0) * 0.15
-                        prob = max(0.1, min(0.9, prob))
-                        prob = prob * min(1.0, len(last_events) / 7)
-                        
-                        pred_mag = mag_max * (0.4 + prob * 0.6)
-                        
-                        logger.info(f"📊 Упрощённый прогноз:")
-                        logger.info(f"   Вероятность: {prob*100:.1f}%")
-                        logger.info(f"   Магнитуда: {pred_mag:.2f}")
-                        
-                        if TG_AVAILABLE and chat_id and prob > 0.3:
-                            msg = (
-                                f"🔮 <b>УПРОЩЁННЫЙ ПРОГНОЗ (резерв)</b>\n"
-                                f"{'─' * 30}\n"
-                                f"Вероятность M≥6.0: <b>{prob*100:.1f}%</b>\n"
-                                f"Прогнозируемая магнитуда: <b>{pred_mag:.2f}</b>\n"
-                                f"Максимальная M: {mag_max:.2f}\n"
-                                f"{'─' * 30}\n"
-                                f"⚠️ LSTM временно недоступен"
-                            )
-                            url = f"https://api.telegram.org/bot{token}/sendMessage"
-                            payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
-                            requests.post(url, data=payload, timeout=30)
-                            logger.info("✅ Упрощённый прогноз отправлен")
-                except Exception as e2:
-                    logger.error(f"❌ Ошибка упрощённого прогноза: {e2}")
-    else:
-        if not LSTM_AVAILABLE:
-            logger.info("ℹ️ LSTM-прогнозирование пропущено (модуль недоступен)")
-        else:
-            logger.info("ℹ️ LSTM-прогнозирование пропущено (нет данных)")
-    # ═══════════════════════════════════════════════════════════════
+                # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1e: LSTM-ПРОГНОЗИРОВАНИЕ (ОБНОВЛЕННАЯ ВЕРСИЯ)
     # ═══════════════════════════════════════════════════════════════
     """
