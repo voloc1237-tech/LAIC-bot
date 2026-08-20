@@ -418,7 +418,7 @@ def main():
                         anomaly = swarm.detect_magnetic_anomaly(mag_df)
                         if anomaly['has_anomaly']:
                             logger.critical(f"   🔴🔴🔴 SWARM МАГНИТНАЯ АНОМАЛИЯ: Z={anomaly['max_z_score']:.2f}σ")
-                                iono_anomaly = True
+                            iono_anomaly = True
                             event_swarm[event_id] = swarm_data
                 except Exception as e:
                     logger.warning(f"   ⚠️ Swarm ошибка: {e}")
