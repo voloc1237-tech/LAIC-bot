@@ -167,6 +167,15 @@ try:
 except ImportError:
     ANOMALY_AVAILABLE = False
 
+# Swarm
+try:
+    from swarm_collector import SwarmCollector
+    SWARM_AVAILABLE = True
+    logger.info("✅ SwarmCollector загружен")
+except ImportError:
+    SWARM_AVAILABLE = False
+    logger.warning("⚠️ SwarmCollector не доступен")
+
 # LSTM
 try:
     from tensorflow.keras.models import load_model
