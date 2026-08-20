@@ -1,104 +1,78 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-test_swarm.py — тест интеграции Swarm
+test_swarm.py — тест с явной передачей токена
 """
 
 import os
 import logging
 from datetime import datetime, timedelta, timezone
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def test_swarm():
-    """Тестирует подключение к Swarm и получение данных."""
-    
     logger.info("=" * 60)
-    logger.info("🧪 ТЕСТИРОВАНИЕ SWARM COLLECTOR")
+    logger.info("🧪 ТЕСТИРОВАНИЕ SWARM")
     logger.info("=" * 60)
     
-    # 1. Проверяем наличие токена
     token = os.environ.get('VIRES_ACCESS_TOKEN')
     if not token:
-        logger.error("❌ Токен VIRES_ACCESS_TOKEN не найден в окружении")
-        logger.info("   Установите: export VIRES_ACCESS_TOKEN='ваш_токен'")
+        logger.error("❌ Токен не найден")
         return False
     
     logger.info(f"✅ Токен найден (длина: {len(token)})")
     
-    # 2. Импортируем и инициализируем коллектор
     try:
         from swarm_collector import SwarmCollector
-        logger.info("✅ SwarmCollector импортирован")
-    except ImportError as e:
-        logger.error(f"❌ Ошибка импорта SwarmCollector: {e}")
-        return False
-    
-    collector = SwarmCollector()
-    status = collector.get_status()
-    logger.info(f"📊 Статус: {status}")
-    
-    if not status['request_ready']:
-        logger.error("❌ Соединение с Swarm не установлено")
-        return False
-    
-    # 3. Тестовый запрос
-    # Берём событие за последние 3 дня (чтобы были данные)
-    end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(days=3)
-    lat, lon = 35.0, 140.0  # Япония
-    
-    logger.info(f"📅 Запрос данных: {start_time.date()} — {end_time.date()}")
-    logger.info(f"📍 Координаты: ({lat}, {lon})")
-    
-    try:
-        # Магнитные данные (FAST)
-        logger.info("🛰️ Запрос магнитных данных (FAST)...")
-        mag_df = collector.fetch_magnetic_data(lat, lon, start_time, end_time, use_fast=True)
+        collector = SwarmCollector()
         
-        if mag_df.empty:
-            logger.warning("⚠️ Магнитные данные не получены (FAST)")
-            logger.info("🔄 Пробуем OPER...")
-            mag_df = collector.fetch_magnetic_data(lat, lon, start_time, end_time, use_fast=False)
+        # Проверяем статус
+        status = collector.get_status()
+        logger.info(f"📊 Статус: {status}")
+        
+        if not status['available']:
+            logger.error("❌ viresclient не доступен")
+            return False
+        
+        if not status['token_set']:
+            logger.error("❌ Токен не установлен")
+            return False
+        
+        # Тестовый запрос
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=3)
+        lat, lon = 35.0, 140.0  # Япония
+        
+        logger.info(f"📅 Запрос: {start.date()} — {end.date()}")
+        logger.info(f"📍 Координаты: ({lat}, {lon})")
+        
+        # Пробуем получить магнитные данные
+        mag_df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft='A', use_fast=False)
         
         if not mag_df.empty:
-            logger.info(f"✅ Получено {len(mag_df)} записей магнитных данных")
-            logger.info(f"   Колонки: {mag_df.columns.tolist()[:10]}...")
-            
-            # Проверяем аномалии
+            logger.info(f"✅ Получено {len(mag_df)} записей")
             anomaly = collector.detect_anomaly(mag_df)
             logger.info(f"   Аномалия: {anomaly['has_anomaly']}")
             if anomaly['has_anomaly']:
                 logger.info(f"   Z-max: {anomaly['max_z_score']:.2f}σ")
-                logger.info(f"   Кол-во аномалий: {anomaly['anomaly_count']}")
         else:
-            logger.warning("⚠️ Магнитные данные не получены")
+            logger.warning("⚠️ Данные не получены")
+            
+            # Пробуем B и C
+            for sc in ['B', 'C']:
+                df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft=sc, use_fast=False)
+                if not df.empty:
+                    logger.info(f"✅ Спутник {sc}: {len(df)} записей")
+                    break
         
-        # TEC данные
-        logger.info("🛰️ Запрос TEC данных...")
-        tec_df = collector.fetch_tec_data(lat, lon, start_time, end_time, use_fast=True)
-        
-        if tec_df.empty:
-            logger.warning("⚠️ TEC данные не получены (FAST)")
-            logger.info("🔄 Пробуем OPER...")
-            tec_df = collector.fetch_tec_data(lat, lon, start_time, end_time, use_fast=False)
-        
-        if not tec_df.empty:
-            logger.info(f"✅ Получено {len(tec_df)} записей TEC данных")
-        else:
-            logger.warning("⚠️ TEC данные не получены")
+        return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при запросе данных: {e}")
+        logger.error(f"❌ Ошибка: {e}")
+        import traceback
+        traceback.print_exc()
         return False
-    
-    logger.info("=" * 60)
-    logger.info("✅ Тест Swarm завершён")
-    logger.info("=" * 60)
-    return True
-
 
 if __name__ == "__main__":
     success = test_swarm()
