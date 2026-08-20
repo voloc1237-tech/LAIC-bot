@@ -326,6 +326,7 @@ def main():
                 logger.warning(f"⚠️ Ошибка GEE для {region_name}: {e}")
                 lst_cache[region_name] = None
 
+
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1c: СБОР ДОПОЛНИТЕЛЬНЫХ ДАННЫХ
     # ═══════════════════════════════════════════════════════════════
@@ -333,7 +334,7 @@ def main():
     event_weather = {}
     event_iono = {}
     event_space = {}
-    event_swarm = {}   # <-- ДОБАВЛЕНО
+    event_swarm = {}
 
     all_events = pd.concat(
         [df for df in data.values() if isinstance(df, pd.DataFrame) and not df.empty],
@@ -349,12 +350,11 @@ def main():
 
         weather = WeatherCollector() if WEATHER_AVAILABLE else None
         iono = EnhancedIonosphereCollector() if IONO_AVAILABLE else None
-        space = SpaceWeatherCollector() if SPACE_AVAILABLE else None  # <-- ИСПРАВЛЕНО
+        space = SpaceWeatherCollector() if SPACE_AVAILABLE else None
 
         # Проверка качества космических данных
         if space:
             try:
-                # Используем текущее время для проверки
                 check_time = datetime.now(timezone.utc)
                 test_start = check_time - timedelta(days=10)
                 quality = get_data_quality(test_start, check_time)
@@ -386,14 +386,15 @@ def main():
                     wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
                     if not wdf.empty:
                         event_weather[event_id] = wdf
+                        logger.info(f"   🌡️ Погода: {len(wdf)} дней")
                 except Exception as e:
                     logger.debug(f"   Погода: {e}")
 
             # ===== ИОНОСФЕРА (TEC) — приоритет IONEX, резерв Swarm =====
             iono_data = None
-            iono_anomaly = None
+            iono_anomaly = False
 
-            # 1. Пробуем IONEX (традиционный способ)
+            # 1. Пробуем IONEX
             if IONO_AVAILABLE:
                 try:
                     iono_data = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
@@ -405,6 +406,8 @@ def main():
                             if z_max > 2.0:
                                 logger.critical(f"   🔴🔴🔴 ИОНОСФЕРНАЯ АНОМАЛИЯ (IONEX): Z={z_max:.2f}σ")
                                 iono_anomaly = True
+                        # ✅ СОХРАНЯЕМ
+                        event_iono[event_id] = iono_data
                 except Exception as e:
                     logger.warning(f"   ⚠️ IONEX ошибка: {e}")
 
@@ -415,13 +418,13 @@ def main():
                     swarm = SwarmCollector()
                     swarm_data = swarm.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
 
-                    # TEC из Swarm
                     tec_df = swarm_data.get('tec')
                     if tec_df is not None and not tec_df.empty:
                         tec_mean = swarm.get_tec_mean(tec_df)
                         logger.info(f"   🛰️ Swarm TEC: {tec_mean:.2f} TECU")
+                        # ✅ СОХРАНЯЕМ
+                        event_iono[event_id] = swarm_data
 
-                    # Магнитные аномалии из Swarm
                     mag_df = swarm_data.get('magnetic')
                     if mag_df is not None and not mag_df.empty:
                         anomaly = swarm.detect_magnetic_anomaly(mag_df)
@@ -432,22 +435,35 @@ def main():
                 except Exception as e:
                     logger.warning(f"   ⚠️ Swarm ошибка: {e}")
 
-            if iono_anomaly is None:
+            if not iono_anomaly:
                 logger.info("   ✅ Ионосфера в норме")
 
-            # Космическая погода
+            # ===== КОСМИЧЕСКАЯ ПОГОДА =====
             if space:
                 try:
                     start = event_time - timedelta(days=7)
                     end = event_time + timedelta(days=3)
                     space_data = space.fetch_all_for_period(start, end)
-                    if any(not df.empty for df in space_data.values()):
+                
+                    # Проверяем, есть ли данные
+                    has_data = False
+                    for key, df in space_data.items():
+                        if df is not None and not df.empty:
+                            has_data = True
+                            logger.info(f"   ☀️ {key}: {len(df)} записей")
+                
+                    if has_data:
                         event_space[event_id] = space_data
+                        logger.info(f"   ☀️ Космическая погода: загружена")
+                    else:
+                        logger.warning(f"   ⚠️ Космическая погода: нет данных")
                 except Exception as e:
-                    logger.debug(f"   Космос: {e}")
+                    logger.warning(f"   ⚠️ Космос ошибка: {e}")
 
         logger.info(f"✅ Собрано: погода {len(event_weather)}, ионосфера {len(event_iono)}, космос {len(event_space)}")
-
+    else:
+        logger.info("ℹ️ Нет сильных событий для детального сбора")
+    
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1d: ИИ-АНАЛИЗ АНОМАЛИЙ
     # ═══════════════════════════════════════════════════════════════
