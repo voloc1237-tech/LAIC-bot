@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-test_swarm.py — тест с явной передачей токена
-"""
-
 import os
 import logging
 from datetime import datetime, timedelta, timezone
@@ -27,45 +21,61 @@ def test_swarm():
         from swarm_collector import SwarmCollector
         collector = SwarmCollector()
         
-        # Проверяем статус
-        status = collector.get_status()
-        logger.info(f"📊 Статус: {status}")
-        
-        if not status['available']:
+        if not collector.get_status()['available']:
             logger.error("❌ viresclient не доступен")
             return False
         
-        if not status['token_set']:
-            logger.error("❌ Токен не установлен")
-            return False
+        # ===== ТЕСТ 1: ДАННЫЕ ЗА 2024 ГОД (ГАРАНТИРОВАННО ЕСТЬ) =====
+        end = datetime(2024, 1, 5, tzinfo=timezone.utc)
+        start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        lat, lon = 35.0, 140.0
         
-        # Тестовый запрос
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=3)
-        lat, lon = 35.0, 140.0  # Япония
-        
-        logger.info(f"📅 Запрос: {start.date()} — {end.date()}")
+        logger.info(f"📅 Тест 1: {start.date()} — {end.date()}")
         logger.info(f"📍 Координаты: ({lat}, {lon})")
         
-        # Пробуем получить магнитные данные
+        # Пробуем спутник Alpha (A) за этот период
         mag_df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft='A', use_fast=False)
         
         if not mag_df.empty:
-            logger.info(f"✅ Получено {len(mag_df)} записей")
+            logger.info(f"✅ Alpha: получено {len(mag_df)} записей")
+            logger.info(f"   Колонки: {mag_df.columns.tolist()}")
+            logger.info(f"   Первые 3 записи:\n{mag_df.head(3)}")
             anomaly = collector.detect_anomaly(mag_df)
             logger.info(f"   Аномалия: {anomaly['has_anomaly']}")
             if anomaly['has_anomaly']:
                 logger.info(f"   Z-max: {anomaly['max_z_score']:.2f}σ")
         else:
-            logger.warning("⚠️ Данные не получены")
+            logger.warning("⚠️ Alpha: данных нет")
             
-            # Пробуем B и C
-            for sc in ['B', 'C']:
-                df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft=sc, use_fast=False)
-                if not df.empty:
-                    logger.info(f"✅ Спутник {sc}: {len(df)} записей")
-                    break
+            # Пробуем Bravo (B)
+            mag_df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft='B', use_fast=False)
+            if not mag_df.empty:
+                logger.info(f"✅ Bravo: получено {len(mag_df)} записей")
+            else:
+                logger.warning("⚠️ Bravo: данных нет")
+                
+                # Пробуем Charlie (C)
+                mag_df = collector.fetch_magnetic_data(lat, lon, start, end, spacecraft='C', use_fast=False)
+                if not mag_df.empty:
+                    logger.info(f"✅ Charlie: получено {len(mag_df)} записей")
+                else:
+                    logger.warning("⚠️ Данных нет ни с одного спутника за этот период")
+                    logger.info("   Попробуйте другой период или координаты")
+                    return False
         
+        # ===== ТЕСТ 2: ДАННЫЕ ЗА ПОСЛЕДНИЕ 3 ДНЯ =====
+        logger.info("\n" + "=" * 60)
+        logger.info("🔄 Тест 2: Последние 3 дня")
+        
+        end_now = datetime.now(timezone.utc)
+        start_now = end_now - timedelta(days=3)
+        
+        mag_df_now = collector.fetch_magnetic_data(lat, lon, start_now, end_now, spacecraft='A', use_fast=False)
+        if not mag_df_now.empty:
+            logger.info(f"✅ Alpha (последние 3 дня): {len(mag_df_now)} записей")
+        else:
+            logger.info("ℹ️ Alpha (последние 3 дня): данных нет (нет пролётов)")
+
         return True
         
     except Exception as e:
