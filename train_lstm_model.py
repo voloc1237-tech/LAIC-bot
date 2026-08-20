@@ -34,7 +34,7 @@ class LSTMTrainer:
         self.sequence_length = 7
         self.feature_names = [
             'magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
-            'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean'
+            'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean', 'swarm_anomaly'
         ]
         
     def load_library(self, years=[2022, 2023, 2024]):
