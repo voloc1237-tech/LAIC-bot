@@ -44,7 +44,7 @@ def load_full_year(year):
 
 def prepare_sequences(df, sequence_length=7, prediction_window=7):
     feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
-                     'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean']
+                     'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean', 'swarm_anomaly']
     X, y = [], []
     df_sorted = df.sort_values('time').reset_index(drop=True)
     for i in range(sequence_length, len(df_sorted) - prediction_window):
