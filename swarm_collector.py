@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 swarm_collector.py — сбор данных миссии ESA Swarm
+Явная передача токена без сохранения в конфигурацию
 """
 
 import os
@@ -10,12 +11,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import pickle
 
 logger = logging.getLogger(__name__)
 
 try:
-    from viresclient import SwarmRequest, ClientConfig
+    from viresclient import SwarmRequest
     VIRES_AVAILABLE = True
     logger.info("✅ viresclient загружен")
 except ImportError:
@@ -24,81 +24,62 @@ except ImportError:
 
 
 class SwarmCollector:
-    """
-    Сборщик данных миссии ESA Swarm.
-    """
+    """Сборщик данных миссии ESA Swarm с явной передачей токена."""
     
     VIRES_URL = "https://vires.services/ows"
     
     def __init__(self, cache_dir="data/swarm_cache"):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
         self.token = os.environ.get('VIRES_ACCESS_TOKEN')
-        self.request = None
         
         if self.token:
             logger.info(f"✅ Swarm токен загружен (длина: {len(self.token)})")
         else:
             logger.warning("⚠️ Swarm токен не найден (VIRES_ACCESS_TOKEN)")
-        
-        self._init_request()
     
-    def _init_request(self):
-        """Инициализирует запрос к Swarm с токеном."""
+    def _create_request(self):
+        """Создаёт SwarmRequest с явной передачей токена."""
         if not VIRES_AVAILABLE or not self.token:
-            return
+            return None
         
         try:
-            # Сохраняем токен в конфигурацию
-            cc = ClientConfig()
-            cc.set_site_config(self.VIRES_URL, token=self.token)
-            cc.default_url = self.VIRES_URL
-            cc.save()
-            logger.info("🔑 Swarm: токен сохранён в конфигурацию")
-            
-            self.request = SwarmRequest()
-            logger.info("🛰️ Swarm: соединение установлено")
+            request = SwarmRequest(url=self.VIRES_URL, token=self.token)
+            logger.debug("🛰️ SwarmRequest создан с токеном")
+            return request
         except Exception as e:
-            logger.warning(f"⚠️ Swarm: ошибка соединения: {e}")
-            self.request = None
+            logger.error(f"❌ Ошибка создания SwarmRequest: {e}")
+            return None
     
-    def _get_collection(self, spacecraft='A', use_fast=True, data_type='mag'):
-        """Получить правильное имя коллекции."""
-        # Для магнитных данных используем MAGx_LR_1B
-        if data_type == 'mag':
-            prefix = "SW_FAST" if use_fast else "SW_OPER"
-            return f"{prefix}_MAG{spacecraft}_LR_1B"
-        # Для TEC
-        elif data_type == 'tec':
-            prefix = "SW_FAST" if use_fast else "SW_OPER"
-            return f"{prefix}_TEC_TMS_2F"
-        return None
-    
-    def fetch_magnetic_data(self, lat, lon, start_time, end_time, spacecraft='A', use_fast=True):
-        """Получает магнитные данные."""
-        if not VIRES_AVAILABLE or self.request is None:
+    def fetch_magnetic_data(self, lat, lon, start_time, end_time, spacecraft='A', use_fast=False):
+        """
+        Получает магнитные данные с указанного спутника.
+        """
+        request = self._create_request()
+        if request is None:
             return pd.DataFrame()
         
-        collection = self._get_collection(spacecraft, use_fast, 'mag')
-        if not collection:
-            return pd.DataFrame()
+        # Используем OPER (более стабильные данные)
+        collection = f"SW_OPER_MAG{spacecraft}_LR_1B"
+        if use_fast:
+            collection = f"SW_FAST_MAG{spacecraft}_LR_1B"
         
         try:
             logger.info(f"🛰️ Swarm: запрос {collection} за {start_time.date()} — {end_time.date()}")
             
-            self.request.set_collection(collection)
-            self.request.set_products(
+            request.set_collection(collection)
+            request.set_products(
                 measurements=["F", "B_NEC"],
                 models=["CHAOS-Core"],
-                auxiliaries=["QDLat", "QDLon", "Radius", "Spacecraft"],
+                auxiliaries=["QDLat", "QDLon", "Radius"],
                 sampling_step="PT10S"
             )
             
-            data = self.request.get_between(
+            data = request.get_between(
                 start_time=start_time,
                 end_time=end_time,
-                asynchronous=False  # синхронный режим для теста
+                asynchronous=False,
+                show_progress=False
             )
             
             df = data.as_dataframe()
@@ -126,9 +107,6 @@ class SwarmCollector:
             else:
                 df_filtered['F_anomaly'] = df_filtered['F'] - df_filtered['F'].mean()
             
-            df_filtered['event_lat'] = lat
-            df_filtered['event_lon'] = lon
-            
             logger.info(f"🛰️ Swarm: получено {len(df_filtered)} записей")
             return df_filtered
             
@@ -136,80 +114,27 @@ class SwarmCollector:
             logger.error(f"❌ Swarm ошибка: {e}")
             return pd.DataFrame()
     
-    def fetch_tec_data(self, lat, lon, start_time, end_time, use_fast=True):
-        """Получает TEC данные."""
-        if not VIRES_AVAILABLE or self.request is None:
-            return pd.DataFrame()
-        
-        collection = self._get_collection('A', use_fast, 'tec')
-        if not collection:
-            return pd.DataFrame()
-        
-        try:
-            logger.info(f"🛰️ Swarm TEC: запрос {collection}")
-            
-            self.request.set_collection(collection)
-            self.request.set_products(
-                measurements=["TEC"],
-                auxiliaries=["Latitude", "Longitude"],
-                sampling_step="PT10S"
-            )
-            
-            data = self.request.get_between(
-                start_time=start_time,
-                end_time=end_time,
-                asynchronous=False
-            )
-            
-            df = data.as_dataframe()
-            
-            if df.empty:
-                return pd.DataFrame()
-            
-            df_filtered = df[
-                (df['Latitude'] >= lat - 5) &
-                (df['Latitude'] <= lat + 5) &
-                (df['Longitude'] >= lon - 5) &
-                (df['Longitude'] <= lon + 5)
-            ]
-            
-            if df_filtered.empty:
-                return pd.DataFrame()
-            
-            df_filtered['event_lat'] = lat
-            df_filtered['event_lon'] = lon
-            
-            logger.info(f"🛰️ Swarm TEC: получено {len(df_filtered)} записей")
-            return df_filtered
-            
-        except Exception as e:
-            logger.error(f"❌ Swarm TEC ошибка: {e}")
-            return pd.DataFrame()
-    
-    def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3, use_fast=True):
+    def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3):
         """Собирает данные для события."""
         start = event_time - timedelta(days=days_before)
         end = event_time + timedelta(days=days_after)
         
-        # Пробуем все три спутника
-        mag_dfs = []
-        for spacecraft in ['A', 'B', 'C']:
-            df = self.fetch_magnetic_data(lat, lon, start, end, spacecraft, use_fast)
-            if not df.empty:
-                mag_dfs.append(df)
+        # Пробуем спутник A (Alpha)
+        mag_df = self.fetch_magnetic_data(lat, lon, start, end, spacecraft='A', use_fast=False)
         
-        mag_df = pd.concat(mag_dfs, ignore_index=True) if mag_dfs else pd.DataFrame()
-        tec_df = self.fetch_tec_data(lat, lon, start, end, use_fast)
+        # Если A не дал данных, пробуем B или C
+        if mag_df.empty:
+            mag_df = self.fetch_magnetic_data(lat, lon, start, end, spacecraft='B', use_fast=False)
+        if mag_df.empty:
+            mag_df = self.fetch_magnetic_data(lat, lon, start, end, spacecraft='C', use_fast=False)
         
         return {
             'magnetic': mag_df,
-            'tec': tec_df,
             'start': start,
             'end': end,
             'lat': lat,
             'lon': lon,
-            'event_time': event_time,
-            'data_source': 'FAST' if use_fast else 'OPER'
+            'event_time': event_time
         }
     
     def detect_anomaly(self, df, threshold=2.0):
@@ -229,8 +154,7 @@ class SwarmCollector:
     def get_status(self):
         return {
             'available': VIRES_AVAILABLE,
-            'token_set': bool(self.token),
-            'request_ready': self.request is not None
+            'token_set': bool(self.token)
         }
 
 
