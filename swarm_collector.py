@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 swarm_collector.py — сбор данных миссии ESA Swarm
-Обновлённые названия коллекций (актуальные на 2026 год)
 """
 
 import os
@@ -16,7 +15,7 @@ import pickle
 logger = logging.getLogger(__name__)
 
 try:
-    from viresclient import SwarmRequest, set_token
+    from viresclient import SwarmRequest, ClientConfig
     VIRES_AVAILABLE = True
     logger.info("✅ viresclient загружен")
 except ImportError:
@@ -30,19 +29,6 @@ class SwarmCollector:
     """
     
     VIRES_URL = "https://vires.services/ows"
-    
-    # АКТУАЛЬНЫЕ названия коллекций (без MAGx — нужно указывать конкретный спутник)
-    # Для каждого спутника: A (Alpha), B (Bravo), C (Charlie)
-    COLLECTIONS = {
-        'magnetic_fast_a': 'SW_FAST_MAGA_LR_1B',
-        'magnetic_fast_b': 'SW_FAST_MAGB_LR_1B',
-        'magnetic_fast_c': 'SW_FAST_MAGC_LR_1B',
-        'magnetic_oper_a': 'SW_OPER_MAGA_LR_1B',
-        'magnetic_oper_b': 'SW_OPER_MAGB_LR_1B',
-        'magnetic_oper_c': 'SW_OPER_MAGC_LR_1B',
-        'tec_fast': 'SW_FAST_TEC_TMS_2F',      # FAST TEC
-        'tec_oper': 'SW_OPER_TEC_TMS_2F',      # OPER TEC
-    }
     
     def __init__(self, cache_dir="data/swarm_cache"):
         self.cache_dir = Path(cache_dir)
@@ -64,38 +50,38 @@ class SwarmCollector:
             return
         
         try:
-            set_token(self.token, self.VIRES_URL)
+            # Сохраняем токен в конфигурацию
+            cc = ClientConfig()
+            cc.set_site_config(self.VIRES_URL, token=self.token)
+            cc.default_url = self.VIRES_URL
+            cc.save()
+            logger.info("🔑 Swarm: токен сохранён в конфигурацию")
+            
             self.request = SwarmRequest()
             logger.info("🛰️ Swarm: соединение установлено")
         except Exception as e:
             logger.warning(f"⚠️ Swarm: ошибка соединения: {e}")
             self.request = None
     
-    def _get_available_collections(self):
-        """Получить список доступных коллекций."""
-        if self.request is None:
-            return []
-        try:
-            collections = self.request.available_collections()
-            logger.info(f"📋 Доступные коллекции: {len(collections)}")
-            return collections
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка получения коллекций: {e}")
-            return []
+    def _get_collection(self, spacecraft='A', use_fast=True, data_type='mag'):
+        """Получить правильное имя коллекции."""
+        # Для магнитных данных используем MAGx_LR_1B
+        if data_type == 'mag':
+            prefix = "SW_FAST" if use_fast else "SW_OPER"
+            return f"{prefix}_MAG{spacecraft}_LR_1B"
+        # Для TEC
+        elif data_type == 'tec':
+            prefix = "SW_FAST" if use_fast else "SW_OPER"
+            return f"{prefix}_TEC_TMS_2F"
+        return None
     
     def fetch_magnetic_data(self, lat, lon, start_time, end_time, spacecraft='A', use_fast=True):
-        """
-        Получает магнитные данные с указанного спутника.
-        """
+        """Получает магнитные данные."""
         if not VIRES_AVAILABLE or self.request is None:
             return pd.DataFrame()
         
-        # Выбираем коллекцию
-        key = f"magnetic_fast_{spacecraft.lower()}" if use_fast else f"magnetic_oper_{spacecraft.lower()}"
-        collection = self.COLLECTIONS.get(key)
-        
+        collection = self._get_collection(spacecraft, use_fast, 'mag')
         if not collection:
-            logger.error(f"❌ Неизвестная коллекция: {key}")
             return pd.DataFrame()
         
         try:
@@ -111,16 +97,16 @@ class SwarmCollector:
             
             data = self.request.get_between(
                 start_time=start_time,
-                end_time=end_time
+                end_time=end_time,
+                asynchronous=False  # синхронный режим для теста
             )
             
             df = data.as_dataframe()
             
             if df.empty:
-                logger.warning(f"⚠️ Swarm: нет данных за период")
                 return pd.DataFrame()
             
-            # Фильтр по координатам (QDLat/QDLon)
+            # Фильтр по координатам
             lat_range = 5.0
             lon_range = 5.0
             
@@ -132,7 +118,6 @@ class SwarmCollector:
             ]
             
             if df_filtered.empty:
-                logger.warning(f"⚠️ Swarm: нет данных в радиусе {lat_range}°")
                 return pd.DataFrame()
             
             # Аномалии
@@ -156,7 +141,9 @@ class SwarmCollector:
         if not VIRES_AVAILABLE or self.request is None:
             return pd.DataFrame()
         
-        collection = self.COLLECTIONS['tec_fast'] if use_fast else self.COLLECTIONS['tec_oper']
+        collection = self._get_collection('A', use_fast, 'tec')
+        if not collection:
+            return pd.DataFrame()
         
         try:
             logger.info(f"🛰️ Swarm TEC: запрос {collection}")
@@ -170,7 +157,8 @@ class SwarmCollector:
             
             data = self.request.get_between(
                 start_time=start_time,
-                end_time=end_time
+                end_time=end_time,
+                asynchronous=False
             )
             
             df = data.as_dataframe()
@@ -210,12 +198,7 @@ class SwarmCollector:
             if not df.empty:
                 mag_dfs.append(df)
         
-        # Объединяем данные со всех спутников
-        if mag_dfs:
-            mag_df = pd.concat(mag_dfs, ignore_index=True)
-        else:
-            mag_df = pd.DataFrame()
-        
+        mag_df = pd.concat(mag_dfs, ignore_index=True) if mag_dfs else pd.DataFrame()
         tec_df = self.fetch_tec_data(lat, lon, start, end, use_fast)
         
         return {
@@ -230,13 +213,9 @@ class SwarmCollector:
         }
     
     def detect_anomaly(self, df, threshold=2.0):
-        """Обнаруживает аномалии в магнитных данных."""
+        """Обнаруживает аномалии."""
         if df.empty or 'F_anomaly' not in df.columns:
-            return {
-                'has_anomaly': False,
-                'max_z_score': 0.0,
-                'anomaly_count': 0
-            }
+            return {'has_anomaly': False, 'max_z_score': 0.0, 'anomaly_count': 0}
         
         z_scores = np.abs((df['F_anomaly'] - df['F_anomaly'].mean()) / df['F_anomaly'].std())
         anomalies = z_scores > threshold
@@ -248,7 +227,6 @@ class SwarmCollector:
         }
     
     def get_status(self):
-        """Возвращает статус подключения."""
         return {
             'available': VIRES_AVAILABLE,
             'token_set': bool(self.token),
