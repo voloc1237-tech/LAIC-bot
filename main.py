@@ -526,6 +526,7 @@ def main():
         else:
             logger.info(f"ℹ️ Недостаточно данных ({len(events_for_ai)} < 10)")
 
+    
     # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1e: LSTM-ПРОГНОЗИРОВАНИЕ (с учётом Swarm)
     # ═══════════════════════════════════════════════════════════════
@@ -548,10 +549,19 @@ def main():
                     scaler = pickle.load(f)
                 logger.info("✅ LSTM модель загружена")
             
+                # ===== ИНИЦИАЛИЗАЦИЯ SWARM ДЛЯ LSTM =====
+                swarm_collector = None
+                if SWARM_AVAILABLE:
+                    try:
+                        swarm_collector = SwarmCollector()
+                        logger.info("✅ SwarmCollector инициализирован для LSTM")
+                    except Exception as e:
+                        logger.warning(f"⚠️ SwarmCollector не инициализирован: {e}")
+            
                 # ===== ПРИЗНАКИ (СПИСОК) =====
                 feature_names = ['magnitude', 'depth_km', 'lst_celsius', 'temp_mean',
                                'humidity_mean', 'tec_mean', 'kp_mean', 'dst_mean', 'f107_mean',
-                               'swarm_anomaly']   # <-- ДОБАВЛЕНО
+                               'swarm_anomaly']
             
                 # ===== СОБИРАЕМ ПРИЗНАКИ =====
                 df_features = all_events[['id', 'magnitude', 'depth_km', 'time']].copy()
@@ -591,11 +601,8 @@ def main():
                     # ===== SWARM МАГНИТНАЯ АНОМАЛИЯ =====
                     swarm_info = event_swarm.get(event_id, {})
                     mag_df = swarm_info.get('magnetic', pd.DataFrame())
-                    if mag_df is not None and hasattr(mag_df, 'empty') and not mag_df.empty:
-                        # Используем SwarmCollector для обнаружения аномалии
-                        from swarm_collector import SwarmCollector
-                        swarm = SwarmCollector()
-                        anomaly = swarm.detect_magnetic_anomaly(mag_df)
+                    if mag_df is not None and hasattr(mag_df, 'empty') and not mag_df.empty and swarm_collector is not None:
+                        anomaly = swarm_collector.detect_magnetic_anomaly(mag_df)
                         df_features.at[idx, 'swarm_anomaly'] = anomaly['max_z_score']
                     else:
                         df_features.at[idx, 'swarm_anomaly'] = 0.0
@@ -606,7 +613,6 @@ def main():
                 if len(df_features) >= 7:
                     last_events = df_features.tail(7)
                 
-                    # Проверяем наличие колонки
                     if 'swarm_anomaly' not in last_events.columns:
                         last_events['swarm_anomaly'] = 0.0
                 
@@ -616,7 +622,6 @@ def main():
                 
                     prob = model.predict(X_scaled, verbose=0)[0][0]
                 
-                    # Ограничиваем вероятность
                     if prob > 0.95:
                         prob = 0.85
                         logger.warning("⚠️ Вероятность >95% ограничена до 85%")
@@ -659,7 +664,8 @@ def main():
                 logger.error(f"❌ Ошибка LSTM: {e}")
     else:
         logger.info("ℹ️ LSTM-прогнозирование пропущено")
-    
+
+
                 # ═══════════════════════════════════════════════════════════════
     # ЭТАП 1e: LSTM-ПРОГНОЗИРОВАНИЕ (ОБНОВЛЕННАЯ ВЕРСИЯ)
     # ═══════════════════════════════════════════════════════════════
