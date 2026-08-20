@@ -30,14 +30,20 @@ except ImportError:
 class SwarmCollector:
     """
     Сборщик данных миссии ESA Swarm.
-    - Магнитное поле (MFV, F)
-    - Ионосферные параметры (Ne, Te)
-    - TEC (GNSS)
-    
-    Использует токен из переменной окружения VIRES_ACCESS_TOKEN.
+    - Магнитное поле (MFV, F) — для обнаружения предвестников
+    - TEC (GNSS) — замена традиционным IONEX-данным
+    - FAST-продукты для данных в реальном времени
     """
     
     VIRES_URL = "https://vires.services/ows"
+    
+    # Коллекции для разных типов данных
+    COLLECTIONS = {
+        'magnetic_fast': 'SW_FAST_MAGx_LR_1B',    # FAST (почти реальное время)
+        'magnetic_oper': 'SW_OPER_MAGx_LR_1B',     # OPER (высокое качество, задержка 3 дня)
+        'tec_fast': 'SW_FAST_TECxTMS_2F',          # FAST TEC
+        'tec_oper': 'SW_OPER_TECxTMS_2F',          # OPER TEC
+    }
     
     def __init__(self, cache_dir="data/swarm_cache"):
         self.cache_dir = Path(cache_dir)
@@ -48,7 +54,7 @@ class SwarmCollector:
         self.request = None
         
         if self.token:
-            logger.info("✅ Swarm токен загружен из окружения (длина: %d символов)", len(self.token))
+            logger.info(f"✅ Swarm токен загружен из окружения (длина: {len(self.token)} символов)")
         else:
             logger.warning("⚠️ Swarm токен не найден в окружении (VIRES_ACCESS_TOKEN)")
             logger.warning("   Установите: export VIRES_ACCESS_TOKEN='ваш_токен'")
@@ -66,7 +72,7 @@ class SwarmCollector:
             return
         
         try:
-            # Устанавливаем токен для viresclient
+            # Устанавливаем токен
             set_token(self.token, self.VIRES_URL)
             logger.info("🛰️ Swarm: токен установлен")
             
@@ -81,17 +87,27 @@ class SwarmCollector:
         cache_key = f"{prefix}_{lat:.2f}_{lon:.2f}_{start_time.date()}_{end_time.date()}"
         return self.cache_dir / f"{cache_key}.pkl"
     
-    def fetch_magnetic_data(self, lat, lon, start_time, end_time, radius_km=500):
+    def fetch_magnetic_data(self, lat, lon, start_time, end_time, radius_km=500, use_fast=True):
         """
         Получает магнитные данные (MFV) за период.
-        Возвращает DataFrame с аномалиями магнитного поля.
+        Использует FAST-продукты для данных в реальном времени.
+        
+        Args:
+            lat, lon: координаты
+            start_time, end_time: период
+            radius_km: радиус поиска
+            use_fast: True для FAST (почти реальное время), False для OPER (высокое качество)
+        
+        Returns:
+            DataFrame с магнитными данными и аномалиями
         """
         if not VIRES_AVAILABLE or self.request is None:
             logger.warning("⚠️ Swarm недоступен, возвращаю пустые данные")
             return pd.DataFrame()
         
         # Проверяем кэш
-        cache_path = self._get_cache_path("swarm_mag", lat, lon, start_time, end_time)
+        cache_prefix = "swarm_mag_fast" if use_fast else "swarm_mag_oper"
+        cache_path = self._get_cache_path(cache_prefix, lat, lon, start_time, end_time)
         
         if cache_path.exists():
             try:
@@ -103,14 +119,15 @@ class SwarmCollector:
                 logger.warning(f"⚠️ Ошибка чтения кэша: {e}")
         
         try:
-            logger.info(f"🛰️ Swarm: запрос магнитных данных за {start_time.date()} — {end_time.date()}")
+            collection = self.COLLECTIONS['magnetic_fast'] if use_fast else self.COLLECTIONS['magnetic_oper']
+            logger.info(f"🛰️ Swarm: запрос магнитных данных ({collection}) за {start_time.date()} — {end_time.date()}")
             
             # Настраиваем запрос
-            self.request.set_collection("SW_OPER_MAGA_LR_1B")
+            self.request.set_collection(collection)
             self.request.set_products(
                 measurements=["F", "B_NEC"],
-                models=["CHAOS-Core"],
-                auxiliaries=["QDLat", "QDLon", "Radius"],
+                models=["CHAOS-Core"],  # Для вычисления аномалий
+                auxiliaries=["QDLat", "QDLon", "Radius", "Spacecraft"],
                 sampling_step="PT10S"
             )
             
@@ -125,7 +142,7 @@ class SwarmCollector:
                 logger.warning("⚠️ Swarm: нет данных за период")
                 return pd.DataFrame()
             
-            # Фильтруем по координатам (приблизительно)
+            # Фильтруем по координатам (в квази-дипольных координатах)
             lat_range = radius_km / 111.0
             lon_range = radius_km / 111.0
             
@@ -140,16 +157,16 @@ class SwarmCollector:
                 logger.warning(f"⚠️ Swarm: нет данных в радиусе {radius_km} км")
                 return pd.DataFrame()
             
-            # Вычисляем аномалии (отклонение от модели CHAOS)
+            # Вычисляем аномалии
             if 'F_CHAOS-Core' in df_filtered.columns:
                 df_filtered['F_anomaly'] = df_filtered['F'] - df_filtered['F_CHAOS-Core']
             else:
-                # Если модели нет, используем среднее
                 df_filtered['F_anomaly'] = df_filtered['F'] - df_filtered['F'].mean()
             
-            # Добавляем информацию о координатах для отслеживания
+            # Добавляем метаданные
             df_filtered['event_lat'] = lat
             df_filtered['event_lon'] = lon
+            df_filtered['data_source'] = 'FAST' if use_fast else 'OPER'
             
             # Сохраняем в кэш
             try:
@@ -163,17 +180,23 @@ class SwarmCollector:
             return df_filtered
             
         except Exception as e:
-            logger.error(f"❌ Swarm ошибка: {e}")
-            return pd.DataFrame()
+            # Если FAST не сработал, пробуем OPER
+            if use_fast:
+                logger.warning(f"⚠️ FAST данные не получены, пробуем OPER: {e}")
+                return self.fetch_magnetic_data(lat, lon, start_time, end_time, radius_km, use_fast=False)
+            else:
+                logger.error(f"❌ Swarm ошибка: {e}")
+                return pd.DataFrame()
     
-    def fetch_tec_data(self, lat, lon, start_time, end_time):
+    def fetch_tec_data(self, lat, lon, start_time, end_time, use_fast=True):
         """
         Получает TEC из Swarm GNSS.
         """
         if not VIRES_AVAILABLE or self.request is None:
             return pd.DataFrame()
         
-        cache_path = self._get_cache_path("swarm_tec", lat, lon, start_time, end_time)
+        cache_prefix = "swarm_tec_fast" if use_fast else "swarm_tec_oper"
+        cache_path = self._get_cache_path(cache_prefix, lat, lon, start_time, end_time)
         
         if cache_path.exists():
             try:
@@ -185,9 +208,10 @@ class SwarmCollector:
                 pass
         
         try:
-            logger.info(f"🛰️ Swarm: запрос TEC за {start_time.date()} — {end_time.date()}")
+            collection = self.COLLECTIONS['tec_fast'] if use_fast else self.COLLECTIONS['tec_oper']
+            logger.info(f"🛰️ Swarm: запрос TEC ({collection}) за {start_time.date()} — {end_time.date()}")
             
-            self.request.set_collection("SW_OPER_GNTA_1B")
+            self.request.set_collection(collection)
             self.request.set_products(
                 measurements=["TEC"],
                 auxiliaries=["Latitude", "Longitude"],
@@ -217,6 +241,7 @@ class SwarmCollector:
             
             df_filtered['event_lat'] = lat
             df_filtered['event_lon'] = lon
+            df_filtered['data_source'] = 'FAST' if use_fast else 'OPER'
             
             try:
                 with open(cache_path, 'wb') as f:
@@ -228,10 +253,14 @@ class SwarmCollector:
             return df_filtered
             
         except Exception as e:
-            logger.error(f"❌ Swarm TEC ошибка: {e}")
-            return pd.DataFrame()
+            if use_fast:
+                logger.warning(f"⚠️ FAST TEC не получен, пробуем OPER: {e}")
+                return self.fetch_tec_data(lat, lon, start_time, end_time, use_fast=False)
+            else:
+                logger.error(f"❌ Swarm TEC ошибка: {e}")
+                return pd.DataFrame()
     
-    def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3):
+    def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3, use_fast=True):
         """
         Собирает данные Swarm для события.
         Возвращает словарь с магнитными и TEC данными.
@@ -239,8 +268,8 @@ class SwarmCollector:
         start = event_time - timedelta(days=days_before)
         end = event_time + timedelta(days=days_after)
         
-        mag_df = self.fetch_magnetic_data(lat, lon, start, end)
-        tec_df = self.fetch_tec_data(lat, lon, start, end)
+        mag_df = self.fetch_magnetic_data(lat, lon, start, end, use_fast=use_fast)
+        tec_df = self.fetch_tec_data(lat, lon, start, end, use_fast=use_fast)
         
         return {
             'magnetic': mag_df,
@@ -249,12 +278,14 @@ class SwarmCollector:
             'end': end,
             'lat': lat,
             'lon': lon,
-            'event_time': event_time
+            'event_time': event_time,
+            'data_source': 'FAST' if use_fast else 'OPER'
         }
     
     def detect_anomaly(self, df, threshold=2.0):
         """
         Обнаруживает аномалии в магнитных данных по Z-score.
+        Использует метод, описанный в научных работах по LAIC.
         """
         if df.empty or 'F_anomaly' not in df.columns:
             return {
@@ -265,6 +296,7 @@ class SwarmCollector:
             }
         
         try:
+            # Z-score на основе аномалий
             z_scores = np.abs((df['F_anomaly'] - df['F_anomaly'].mean()) / df['F_anomaly'].std())
             anomalies = z_scores > threshold
             
@@ -308,12 +340,12 @@ if __name__ == "__main__":
     status = collector.get_status()
     print(f"🛰️ Статус Swarm: {status}")
     
-    # Тестовое событие (недавнее землетрясение)
+    # Тестовое событие
     event_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
     lat, lon = 35.0, 140.0  # Япония
     
     print(f"\n🛰️ Тест Swarm для ({lat}, {lon}) в {event_time}")
-    data = collector.fetch_for_event(event_time, lat, lon, days_before=3, days_after=1)
+    data = collector.fetch_for_event(event_time, lat, lon, days_before=3, days_after=1, use_fast=True)
     
     print(f"   Магнитных данных: {len(data['magnetic'])}")
     print(f"   TEC данных: {len(data['tec'])}")
