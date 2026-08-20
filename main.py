@@ -433,6 +433,7 @@ def main():
                             logger.critical(f"   🔴🔴🔴 SWARM МАГНИТНАЯ АНОМАЛИЯ: Z={anomaly['max_z_score']:.2f}σ")
                             iono_anomaly = True
                             event_swarm[event_id] = swarm_data
+                            break
                 except Exception as e:
                     logger.warning(f"   ⚠️ Swarm ошибка: {e}")
 
