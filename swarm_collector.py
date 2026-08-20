@@ -108,36 +108,41 @@ class SwarmCollector:
             return pd.DataFrame()
 
         try:
-            # Пробуем FAST TEC
-            collection = "SW_FAST_TEC_TMS_2F"
-            request.set_collection(collection)
-            request.set_products(
-                measurements=["TEC"],
-                auxiliaries=["Latitude", "Longitude"],
-                sampling_step="PT10S"
-            )
+            # Список коллекций для TEC (по порядку приоритета)
+            collections = [
+                "SW_OPER_TEC_TMS_2F",     # Основная OPER
+                "SW_FAST_TEC_TMS_2F",     # FAST (если есть)
+                "SW_OPER_TEC_TMS_2F",     # Альтернатива
+            ]
+        
+            df = pd.DataFrame()
+            for collection in collections:
+                try:
+                    logger.debug(f"🛰️ Swarm TEC: пробуем {collection}")
+                    request.set_collection(collection)
+                    request.set_products(
+                        measurements=["TEC"],
+                        auxiliaries=["Latitude", "Longitude"],
+                        sampling_step="PT10S"
+                    )
 
-            data = request.get_between(
-                start_time=start_time,
-                end_time=end_time,
-                asynchronous=False,
-                show_progress=False
-            )
+                    data = request.get_between(
+                        start_time=start_time,
+                        end_time=end_time,
+                        asynchronous=False,
+                        show_progress=False
+                    )
 
-            df = data.as_dataframe()
+                    df = data.as_dataframe()
+                    if not df.empty:
+                        logger.info(f"🛰️ Swarm TEC: получено {len(df)} записей из {collection}")
+                        break
+                except Exception as e:
+                    logger.debug(f"   {collection} не сработал: {e}")
+                    continue
+
             if df.empty:
-                # Пробуем OPER TEC
-                collection = "SW_OPER_TEC_TMS_2F"
-                request.set_collection(collection)
-                data = request.get_between(
-                    start_time=start_time,
-                    end_time=end_time,
-                    asynchronous=False,
-                    show_progress=False
-                )
-                df = data.as_dataframe()
-
-            if df.empty:
+                logger.warning("⚠️ Swarm TEC: нет данных ни из одной коллекции")
                 return pd.DataFrame()
 
             # Фильтр по координатам
@@ -149,7 +154,11 @@ class SwarmCollector:
             ]
 
             if df_filtered.empty:
+                logger.warning(f"⚠️ Swarm TEC: нет данных в радиусе 5°")
                 return pd.DataFrame()
+
+            df_filtered['event_lat'] = lat
+            df_filtered['event_lon'] = lon
 
             logger.info(f"🛰️ Swarm TEC: {len(df_filtered)} записей")
             return df_filtered
@@ -157,7 +166,65 @@ class SwarmCollector:
         except Exception as e:
             logger.warning(f"⚠️ Swarm TEC ошибка: {e}")
             return pd.DataFrame()
+    
+    #def fetch_tec_data(self, lat, lon, start_time, end_time):
+        #"""Получает TEC из Swarm GNSS."""
+        #request = self._create_request()
+        #if request is None:
+            #return pd.DataFrame()
 
+        #try:
+            # Пробуем FAST TEC
+            #collection = "SW_FAST_TEC_TMS_2F"
+            #request.set_collection(collection)
+            #request.set_products(
+                #measurements=["TEC"],
+                #auxiliaries=["Latitude", "Longitude"],
+                #sampling_step="PT10S"
+            #)
+
+            #data = request.get_between(
+                #start_time=start_time,
+                #end_time=end_time,
+                #asynchronous=False,
+                #show_progress=False
+            #)
+
+            #df = data.as_dataframe()
+            #if df.empty:
+                # Пробуем OPER TEC
+                #collection = "SW_OPER_TEC_TMS_2F"
+                #request.set_collection(collection)
+                #data = request.get_between(
+                    #start_time=start_time,
+                    #end_time=end_time,
+                    #asynchronous=False,
+                    #show_progress=False
+                #)
+                #df = data.as_dataframe()
+
+            #if df.empty:
+                #return pd.DataFrame()
+
+            # Фильтр по координатам
+            #df_filtered = df[
+                #(df['Latitude'] >= lat - 5) &
+                #(df['Latitude'] <= lat + 5) &
+                #(df['Longitude'] >= lon - 5) &
+                #(df['Longitude'] <= lon + 5)
+            #]
+
+            #if df_filtered.empty:
+                #return pd.DataFrame()
+
+            #logger.info(f"🛰️ Swarm TEC: {len(df_filtered)} записей")
+            #return df_filtered
+
+        #except Exception as e:
+            #logger.warning(f"⚠️ Swarm TEC ошибка: {e}")
+            #return pd.DataFrame()
+    
+   
     def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3):
         """Собирает магнитные и TEC данные для события."""
         start = event_time - timedelta(days=days_before)
