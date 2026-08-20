@@ -399,6 +399,7 @@ def main():
                 try:
                     iono_data = iono.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
                     if iono_data and iono_data.get('tec') is not None and not iono_data['tec'].empty:
+                        event_iono[event_id] = iono_data   # <-- ДОБАВИТЬ!
                         tec_mean = iono_data['tec']['tec_value'].mean()
                         logger.info(f"   🛰️ IONEX TEC: {tec_mean:.2f} TECU")
                         if 'z_score' in iono_data['tec'].columns:
