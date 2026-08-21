@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-collect_cache_data.py — быстрый сбор данных за указанный год
+collect_cache_data.py — сбор данных за указанный год с поддержкой Swarm
 Запуск: python scripts/collect_cache_data.py --year 2022
 """
 
@@ -27,6 +27,16 @@ from data_collector import USGSCollector
 from weather_collector import WeatherCollector
 from space_weather import SpaceWeatherCollector
 
+# Swarm
+try:
+    from swarm_collector import SwarmCollector
+    SWARM_AVAILABLE = True
+    logger_swarm = logging.getLogger(__name__)
+    logger_swarm.info("✅ SwarmCollector загружен")
+except ImportError:
+    SWARM_AVAILABLE = False
+    logging.warning("⚠️ SwarmCollector не доступен")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -45,11 +55,10 @@ if args.year:
     MIN_MAGNITUDE = 4.5
     logger.info(f"📅 Сбор данных за {args.year} год")
 else:
-    # Значения по умолчанию
     START_DATE = datetime(2022, 8, 1, tzinfo=timezone.utc)
     END_DATE = datetime(2022, 12, 31, tzinfo=timezone.utc)
     MIN_MAGNITUDE = 5.0
-    logger.info("📅 Сбор данных за период по умолчанию (август-декабрь 2022)")
+    logger.info("📅 Сбор данных за период по умолчанию")
 
 
 # ----- Климатологические модели -----
@@ -211,27 +220,32 @@ def load_f107_for_period(start_date, end_date):
 # ----- Основная функция сбора -----
 
 def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
+    """Собирает все признаки для события, включая Swarm."""
     if kp_df.empty or f107_df.empty:
         return None
 
     event_ts = pd.Timestamp(event_time).tz_convert('UTC')
 
+    # Kp
     idx = kp_df.index.get_indexer([event_ts], method='nearest')[0]
     if idx == -1:
         return None
     kp_mean = float(kp_df.iloc[idx]['kp'])
 
+    # Dst
     if dst_df is not None and not dst_df.empty:
         idx = dst_df.index.get_indexer([event_ts], method='nearest')[0]
         dst_mean = float(dst_df.iloc[idx]['dst']) if idx != -1 else -20.0
     else:
         dst_mean = -20.0
 
+    # F10.7
     date_mask = f107_df.index.date == event_ts.date()
     if not date_mask.any():
         return None
     f107_mean = float(f107_df[date_mask]['f107'].mean())
 
+    # Погода
     weather = WeatherCollector()
     try:
         wdf = weather.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
@@ -242,8 +256,24 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
     except:
         return None
 
+    # Климатология
     lst_celsius = get_climatology_lst(lat, lon, event_time)
     tec_mean = get_climatology_tec(lat, lon, event_time)
+
+    # ===== SWARM МАГНИТНАЯ АНОМАЛИЯ =====
+    swarm_anomaly = 0.0
+    if SWARM_AVAILABLE:
+        try:
+            swarm = SwarmCollector()
+            swarm_data = swarm.fetch_for_event(event_time, lat, lon, days_before=7, days_after=3)
+            mag_df = swarm_data.get('magnetic')
+            if mag_df is not None and not mag_df.empty:
+                anomaly = swarm.detect_magnetic_anomaly(mag_df)
+                if anomaly['has_anomaly']:
+                    swarm_anomaly = anomaly['max_z_score']
+                    logger.debug(f"   🧲 Swarm аномалия: Z={swarm_anomaly:.2f}σ")
+        except Exception as e:
+            logger.debug(f"   Swarm ошибка: {e}")
 
     return {
         'lst_celsius': lst_celsius,
@@ -253,6 +283,7 @@ def get_event_features(event_time, lat, lon, kp_df, dst_df, f107_df):
         'kp_mean': kp_mean,
         'dst_mean': dst_mean,
         'f107_mean': f107_mean,
+        'swarm_anomaly': swarm_anomaly,   # <-- НОВЫЙ ПРИЗНАК
     }
 
 
