@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 swarm_collector.py — сбор данных миссии ESA Swarm
-Поддерживает: TEC, магнитные аномалии (F, B_NEC)
+Поддерживает: TEC (Absolute_VTEC), магнитные аномалии (F, B_NEC)
 """
 
 import os
@@ -76,7 +76,7 @@ class SwarmCollector:
             if df.empty:
                 return pd.DataFrame()
 
-            # Фильтр по координатам
+            # Фильтр по координатам (квази-дипольные)
             lat_range, lon_range = 5.0, 5.0
             df_filtered = df[
                 (df['QDLat'] >= lat - lat_range) &
@@ -88,7 +88,7 @@ class SwarmCollector:
             if df_filtered.empty:
                 return pd.DataFrame()
 
-            # Аномалии
+            # Вычисляем аномалии
             if 'F_CHAOS-Core' in df_filtered.columns:
                 df_filtered['F_anomaly'] = df_filtered['F'] - df_filtered['F_CHAOS-Core']
             else:
@@ -102,29 +102,26 @@ class SwarmCollector:
             return pd.DataFrame()
 
     def fetch_tec_data(self, lat, lon, start_time, end_time):
-        """Получает TEC из Swarm GNSS."""
+        """Получает TEC из Swarm GNSS (Absolute_VTEC)."""
         request = self._create_request()
         if request is None:
             return pd.DataFrame()
 
         try:
-            # Список коллекций для TEC (по порядку приоритета)
+            # Правильные коллекции TEC по спутникам
             collections = [
                 "SW_OPER_TECATMS_2F",   # Alpha
                 "SW_OPER_TECBTMS_2F",   # Bravo
                 "SW_OPER_TECCTMS_2F",   # Charlie
-                "SW_OPER_TEC_TMS_2F",     # Основная OPER
-                "SW_FAST_TEC_TMS_2F",     # FAST (если есть)
-                "SW_OPER_TEC_TMS_2F",     # Альтернатива
             ]
-        
+            
             df = pd.DataFrame()
             for collection in collections:
                 try:
                     logger.debug(f"🛰️ Swarm TEC: пробуем {collection}")
                     request.set_collection(collection)
                     request.set_products(
-                        measurements=["TEC"],
+                        measurements=["Absolute_VTEC"],   # Правильное измерение!
                         auxiliaries=["Latitude", "Longitude"],
                         sampling_step="PT10S"
                     )
@@ -157,8 +154,12 @@ class SwarmCollector:
             ]
 
             if df_filtered.empty:
-                logger.warning(f"⚠️ Swarm TEC: нет данных в радиусе 5°")
+                logger.warning(f"⚠️ Swarm TEC: нет данных в радиусе 5° для ({lat}, {lon})")
                 return pd.DataFrame()
+
+            # Переименовываем для единообразия
+            if 'Absolute_VTEC' in df_filtered.columns:
+                df_filtered = df_filtered.rename(columns={'Absolute_VTEC': 'TEC'})
 
             df_filtered['event_lat'] = lat
             df_filtered['event_lon'] = lon
@@ -169,65 +170,7 @@ class SwarmCollector:
         except Exception as e:
             logger.warning(f"⚠️ Swarm TEC ошибка: {e}")
             return pd.DataFrame()
-    
-    #def fetch_tec_data(self, lat, lon, start_time, end_time):
-        #"""Получает TEC из Swarm GNSS."""
-        #request = self._create_request()
-        #if request is None:
-            #return pd.DataFrame()
 
-        #try:
-            # Пробуем FAST TEC
-            #collection = "SW_FAST_TEC_TMS_2F"
-            #request.set_collection(collection)
-            #request.set_products(
-                #measurements=["TEC"],
-                #auxiliaries=["Latitude", "Longitude"],
-                #sampling_step="PT10S"
-            #)
-
-            #data = request.get_between(
-                #start_time=start_time,
-                #end_time=end_time,
-                #asynchronous=False,
-                #show_progress=False
-            #)
-
-            #df = data.as_dataframe()
-            #if df.empty:
-                # Пробуем OPER TEC
-                #collection = "SW_OPER_TEC_TMS_2F"
-                #request.set_collection(collection)
-                #data = request.get_between(
-                    #start_time=start_time,
-                    #end_time=end_time,
-                    #asynchronous=False,
-                    #show_progress=False
-                #)
-                #df = data.as_dataframe()
-
-            #if df.empty:
-                #return pd.DataFrame()
-
-            # Фильтр по координатам
-            #df_filtered = df[
-                #(df['Latitude'] >= lat - 5) &
-                #(df['Latitude'] <= lat + 5) &
-                #(df['Longitude'] >= lon - 5) &
-                #(df['Longitude'] <= lon + 5)
-            #]
-
-            #if df_filtered.empty:
-                #return pd.DataFrame()
-
-            #logger.info(f"🛰️ Swarm TEC: {len(df_filtered)} записей")
-            #return df_filtered
-
-        #except Exception as e:
-            #logger.warning(f"⚠️ Swarm TEC ошибка: {e}")
-            #return pd.DataFrame()
-    
-   
     def fetch_for_event(self, event_time, lat, lon, days_before=7, days_after=3):
         """Собирает магнитные и TEC данные для события."""
         start = event_time - timedelta(days=days_before)
@@ -256,7 +199,7 @@ class SwarmCollector:
         }
 
     def detect_magnetic_anomaly(self, df, threshold=2.0):
-        """Обнаруживает аномалии в магнитных данных."""
+        """Обнаруживает аномалии в магнитных данных по Z-score."""
         if df.empty or 'F_anomaly' not in df.columns:
             return {'has_anomaly': False, 'max_z_score': 0.0}
 
