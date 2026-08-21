@@ -31,6 +31,7 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install earthengine-api google-auth
+          pip install viresclient   # <-- ДОБАВЛЕНО
 
       - name: Prepare Earth Engine key
         env:
@@ -43,6 +44,7 @@ jobs:
         env:
           EARTH_ENGINE_KEY_PATH: /tmp/ee-key.json
           EARTH_ENGINE_PROJECT: ${{ secrets.EARTH_ENGINE_PROJECT }}
+          VIRES_ACCESS_TOKEN: ${{ secrets.VIRES_ACCESS_TOKEN }}   # <-- ДОБАВЛЕНО
         run: |
           if [ "${{ github.event.inputs.year }}" == "all" ]; then
             for year in 2022 2023 2024; do
