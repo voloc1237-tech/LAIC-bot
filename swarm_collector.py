@@ -110,6 +110,9 @@ class SwarmCollector:
         try:
             # Список коллекций для TEC (по порядку приоритета)
             collections = [
+                "SW_OPER_TECATMS_2F",   # Alpha
+                "SW_OPER_TECBTMS_2F",   # Bravo
+                "SW_OPER_TECCTMS_2F",   # Charlie
                 "SW_OPER_TEC_TMS_2F",     # Основная OPER
                 "SW_FAST_TEC_TMS_2F",     # FAST (если есть)
                 "SW_OPER_TEC_TMS_2F",     # Альтернатива
